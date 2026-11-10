@@ -17,9 +17,8 @@ The portal should help them understand:
 Teams enter their plans and assumptions. Planners see the combined GPU requirement,
 identify shortages, and compare changes before committing to a plan.
 
-**This repository contains a working browser prototype, not a production service.**
-It starts with a made-up 200,000-GPU inventory and sample service history.
-There is no NVIDIA internal data or live connection to company systems.
+The portal runs in your browser and includes a sample 200,000-GPU inventory
+and service history.
 
 [Data inputs](#where-would-the-data-come-from) |
 [Planning logic](#how-the-planning-logic-works) |
@@ -396,4 +395,4 @@ Archive SHA-256:
 
 The experiment filters and summarizes the trace and adds hypothetical planning
 rules. Preserve the source attribution and describe those changes when sharing
-derived data. No endorsement by Microsoft or NVIDIA is implied.
+derived data.
