@@ -1,5 +1,17 @@
 # GPU capacity planning portal
 
+An interactive, browser-local workspace for service consumption, inference
+growth, training roadmaps and six-month GPU requirements. All screenshots below
+use the synthetic demo; no company-internal telemetry is included.
+
+[Framework](#product-framework) |
+[Logic diagrams](#logic-diagrams) |
+[UI walkthrough](#ui-walkthrough) |
+[Run the portal](#interactive-prototype) |
+[Calculation details](#implemented-portal-calculation-logic)
+
+![GPU Atlas consumption portal with service, team and GPU-pool filters, trend chart and service ledger](docs/screenshots/consumption.png)
+
 ## Product framework
 
 The portal connects **service consumption history -> inference growth +
@@ -64,6 +76,142 @@ Never silently substitute hardware or sum independent service P90s as fleet P90.
 The portal should expose consumption, service details, inference planning,
 training roadmap, portfolio requirements and assumption/calibration evidence.
 Every number must identify observed versus inferred versus synthetic inputs.
+
+## Logic diagrams
+
+These diagrams describe the **implemented local prototype**. Live ingestion,
+calibrated forecasting, topology validation and scheduler enforcement remain
+future layers. GitHub renders the Mermaid diagrams directly.
+
+### End-to-end planning flow
+
+```mermaid
+flowchart LR
+    Records["Daily service consumption"] --> Trends["Daily / weekly trends"]
+    Records --> Baseline["Pre-plan 28-day RPS baseline"]
+    Profiles["Service growth and performance inputs"] --> Inference["Monthly inference GPUs"]
+    Baseline --> Inference
+    Roadmap["Team training roadmap inputs"] --> Training["Rounded training gangs"]
+    Inference --> Demand["Demand by month and compatible pool"]
+    Training --> Demand
+    Inventory["Installed / unavailable / reserve"] --> Supply["Monthly usable supply"]
+    Additions["Commissioning-month additions"] --> Supply
+    Demand --> Compare["Compare demand with supply"]
+    Supply --> Compare
+    Compare --> Ledger["Requirement ledger and CSV"]
+    Compare --> Gaps["Pool shortages or spare budget"]
+```
+
+Consumption trends explain the existing footprint. Inference and training use
+different sizing methods, then converge on the same month/pool ledger. A fleet
+total never authorizes substitution between incompatible pools.
+
+### Inference sizing and missing-data behavior
+
+```mermaid
+flowchart TD
+    Start["Service and planning start month"] --> Filter["Keep only records before planning starts"]
+    Filter --> HasData{"Any eligible observations?"}
+    HasData -->|No| Missing["No baseline: requirement unavailable"]
+    Missing --> Partial["Mark affected portfolio totals partial"]
+    HasData -->|Yes| Window["Latest 28-calendar-day observed window"]
+    Window --> Peak["Maximum recorded daily peak RPS"]
+    Peak --> Growth["Compound annual growth for planning month"]
+    Launch["Cumulative monthly launch RPS"] --> Add["Add launch demand"]
+    Growth --> Add
+    Add --> Headroom["Divide by remaining capacity after headroom"]
+    Profile["Sustainable RPS per replica at SLO"] --> Replicas["Divide by throughput and round replicas up"]
+    Headroom --> Replicas
+    Replicas --> GPUs["Multiply by GPUs per replica"]
+    GPUs --> Result["Inference requirement for this month and pool"]
+```
+
+Growth and throughput are explicit user assumptions, not inferred from GPU busy
+time. Baseline coverage and age must be reviewed. See
+[inference formulas and example](#5-inference-demand-to-gpu-requirement).
+
+### Training sizing: compute and memory screens
+
+```mermaid
+flowchart TD
+    Inputs["Dense parameters and total training tokens"] --> Work["Model FLOPs approximately 6 x N x D"]
+    Hardware["Dense peak FLOP/s per GPU and MFU"] --> Rate["Effective model-work rate per GPU"]
+    Work --> Compute["Compute GPU screen"]
+    Rate --> Compute
+    Time["Active training window in seconds"] --> Compute
+    State["Parameters x state bytes per parameter"] --> Memory["Training-state memory GPU screen"]
+    HBM["Memory capacity per GPU"] --> Memory
+    Compute --> Maximum["Take larger compute or memory count"]
+    Memory --> Maximum
+    Maximum --> Round["Round up to entered topology block"]
+    Round --> Runs["Multiply by concurrent runs"]
+    Runs --> Peak["Training peak GPUs in planned month"]
+    Runs --> Hours["Reserved GPU-hours using entered window"]
+    Peak --> Limits["Estimate only: memory and connected placement unverified"]
+```
+
+This is a dense-pretraining resource envelope, not a universal model estimator.
+The memory screen excludes activations/buffers, and topology rounding is not a
+placement check. See [training formulas and example](#6-training-model-to-compute-and-memory-envelope).
+
+## UI walkthrough
+
+Screenshots are captured from the actual portal at a reduced browser scale so
+the wide planning tables are visible, with full-page captures except for the
+cropped input dialog. They are documentation snapshots, not live views.
+The starting inventory is a synthetic 200,000-GPU scenario; the
+displayed consumption belongs to the modeled services, not every possible
+workload in that inventory.
+
+### Consumption and ownership
+
+The opening screenshot shows the service/team/pool filters, daily/weekly
+consumption trend, allocation-weighted activity, coverage and service ledger.
+YoY stays unavailable because the seeded history does not contain a full year.
+
+### Inference growth planner
+
+Inspect the baseline, growth assumption, serving profile and projected GPU
+requirements. **Configure** opens editable service inputs.
+
+![Inference growth planner showing six-month demand and editable service performance profiles](docs/screenshots/inference-growth.png)
+
+### Training roadmap
+
+Compare model plans, per-run gangs, concurrent GPU counts, reserved GPU-hours and
+MFU sensitivity. These results remain subject to the stated memory and placement
+limitations.
+
+![Training roadmap showing model inputs, GPU estimates and efficiency sensitivity](docs/screenshots/training-roadmap.png)
+
+<details>
+<summary>Show the editable training input form</summary>
+
+The form accepts model parameters, total training tokens, active days, hardware
+throughput, MFU, memory assumptions and concurrency. Saving validates inputs and
+recalculates requirements; it does not allocate infrastructure.
+
+![Training input dialog for entering model size, tokens, hardware profile and planned month](docs/screenshots/training-input.png)
+
+</details>
+
+### Consolidated GPU capacity requirements
+
+Compare inference and training against usable supply by month and compatible
+pool. The ledger exposes shortages even where arithmetic fleet totals show
+enough resources. **Download CSV** exports the current filtered requirements.
+
+![Capacity requirements page showing demand versus supply and month-by-pool shortages](docs/screenshots/capacity-requirements.png)
+
+<details>
+<summary>Show supply inputs, data provenance and workspace portability</summary>
+
+Edit installed/unavailable/reserve counts, enter commissioning additions, inspect
+assumptions, and import/export a browser-local workspace.
+
+![Data and assumptions page showing supply, commissioned additions and JSON workspace tools](docs/screenshots/data-assumptions.png)
+
+</details>
 
 ## Interactive prototype
 
