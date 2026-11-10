@@ -4,6 +4,11 @@ An interactive, browser-local workspace for service consumption, inference
 growth, training roadmaps and six-month GPU requirements. All screenshots below
 use the synthetic demo; no company-internal telemetry is included.
 
+Inference planning supports **historical traffic or business demand drivers**,
+reusable **RPS-at-SLO performance profiles**, and **chronological seasonal
+backtests**. Daily forecast evidence is deliberately separate from six-month
+scenario planning; it is not evidence that a six-month forecast is accurate.
+
 [Framework](#product-framework) |
 [Logic diagrams](#logic-diagrams) |
 [UI walkthrough](#ui-walkthrough) |
@@ -89,6 +94,8 @@ future layers. GitHub renders the Mermaid diagrams directly.
 flowchart LR
     Records["Daily service consumption"] --> Trends["Daily / weekly trends"]
     Records --> Baseline["Pre-plan 28-day RPS baseline"]
+    Records --> Backtests["One-day seasonal backtests: evidence only"]
+    Drivers["Users / sessions / calls / cache / peak factor"] --> Inference
     Profiles["Service growth and performance inputs"] --> Inference["Monthly inference GPUs"]
     Baseline --> Inference
     Roadmap["Team training roadmap inputs"] --> Training["Rounded training gangs"]
@@ -110,7 +117,10 @@ total never authorizes substitution between incompatible pools.
 
 ```mermaid
 flowchart TD
-    Start["Service and planning start month"] --> Filter["Keep only records before planning starts"]
+    Start["Service and planning start month"] --> Method{"Demand method?"}
+    Method -->|Historical| Filter["Keep only records before planning starts"]
+    Method -->|Drivers| Drivers["Users x sessions x requests x calls x cache-miss fraction"]
+    Drivers --> DriverPeak["Divide by 86400; apply peak factor and user growth"]
     Filter --> HasData{"Any eligible observations?"}
     HasData -->|No| Missing["No baseline: requirement unavailable"]
     Missing --> Partial["Mark affected portfolio totals partial"]
@@ -119,15 +129,21 @@ flowchart TD
     Peak --> Growth["Compound annual growth for planning month"]
     Launch["Cumulative monthly launch RPS"] --> Add["Add launch demand"]
     Growth --> Add
+    DriverPeak --> Add
     Add --> Headroom["Divide by remaining capacity after headroom"]
-    Profile["Sustainable RPS per replica at SLO"] --> Replicas["Divide by throughput and round replicas up"]
+    Profile["Inline throughput or reusable RPS-at-SLO profile"] --> Linked{"Library profile selected?"}
+    Linked -->|No| Replicas
+    Linked -->|Yes| Compatible{"Matching pool, configuration, tokens and evidence date?"}
+    Compatible -->|No| Partial
+    Compatible -->|Yes| Replicas["Divide by throughput and round replicas up"]
     Headroom --> Replicas
     Replicas --> GPUs["Multiply by GPUs per replica"]
     GPUs --> Result["Inference requirement for this month and pool"]
 ```
 
+Use one organic demand method, not both; launch increments are added once.
 Growth and throughput are explicit user assumptions, not inferred from GPU busy
-time. Baseline coverage and age must be reviewed. See
+time. Baseline coverage and age must be reviewed in historical mode. See
 [inference formulas and example](#5-inference-demand-to-gpu-requirement).
 
 ### Training sizing: compute and memory screens
@@ -159,6 +175,8 @@ placement check. See [training formulas and example](#6-training-model-to-comput
 Screenshots are captured from the actual portal at a reduced browser scale so
 the wide planning tables are visible, with full-page captures except for the
 cropped input dialog. They are documentation snapshots, not live views.
+These captures show the original portal release; the current navigation also
+includes **Performance profiles** and **Forecast evidence**.
 The starting inventory is a synthetic 200,000-GPU scenario; the
 displayed consumption belongs to the modeled services, not every possible
 workload in that inventory.
@@ -239,6 +257,10 @@ is a lower-bound screen, not proof of fit. It schedules all entered runs
 concurrently in the selected month; peak GPU requirements are deliberately
 conservative and not a placement optimizer. Inference uses user-supplied
 RPS-at-SLO profiles; seeded throughput values are illustrative, not benchmarks.
+The performance library lets several services reuse compatible evidence.
+Demand-driver scenarios can size a service without consumption history.
+The Forecast evidence view compares three one-day predictors on chronological
+validation and held-out periods, with downloadable evidence JSON.
 Month-level supply gaps are deterministic scenarios, not calibrated forecasts.
 Consumption baselines use each service's latest 28-day observed window strictly
 before the planning start month; sparse or stale baselines remain visible in the
@@ -262,6 +284,12 @@ capabilities envisioned in the product framework.
   serving replica, sustainable requests/second per replica at the latency SLO,
   assumed annual demand growth, incremental monthly launch RPS, spare headroom,
   and a description of the performance evidence/assumptions.
+- **Demand-driver scenario:** daily active users, sessions per user, requests per
+  session, backend/model calls per request, cache avoidance and peak-to-average
+  factor. Annual growth applies to users in this mode.
+- **Performance library:** reusable profile ID, GPU pool, configuration key,
+  input/output token bounds, GPUs per replica, sustainable RPS at the SLO,
+  measurement date, evidence description and provenance.
 - **Daily consumption:** one row per service/date with allocated GPU-hours,
   reported average GPU activity (%), peak RPS, total requests and provenance
   (`synthetic` or `user-entered`).
@@ -332,12 +360,13 @@ complete comparison misleading; automatic change-point adjustment is not
 implemented.
 
 **Historical growth is not automatically used as the inference growth input.**
-The inference planner currently uses an explicit user-entered annual assumption.
-There is no fitted traffic model or calibrated forecast interval in the portal.
+The six-month inference planner uses an explicit user-entered annual assumption.
+The separate daily backtest compares simple traffic predictors; it does not
+fit this annual growth rate or provide calibrated forecast intervals.
 
 ### 4. Baseline selection for inference
 
-For each service:
+For each service using **historical demand**:
 
 1. Discard records on or after the first day of the planning start month, so
    later observations do not leak into an earlier scenario.
@@ -351,6 +380,7 @@ an old baseline; the prototype does not extrapolate the gap between that date
 and the planning start. Review its age/coverage before relying on the result.
 If there are no eligible records, the service has **no baseline** and its
 inference requirement is unavailable.
+Driver-based scenarios do not require this historical baseline.
 
 ### 5. Inference demand to GPU requirement
 
@@ -365,7 +395,14 @@ Let:
 - `k` = GPUs per replica.
 
 ```text
-peak RPS(m) = B * (1 + g)^(m / 12) + L * m
+historical organic RPS(m) = B * (1 + g)^(m / 12)
+
+driver organic RPS(m) =
+    daily active users * (1 + g)^(m / 12)
+    * sessions per user * requests per session * model calls per request
+    * (1 - cache avoidance fraction) / 86400 * peak-to-average factor
+
+peak RPS(m) = selected organic RPS(m) + L * m
 
 replicas(m) = ceil(peak RPS(m) / ((1 - h) * q))
 
@@ -377,6 +414,15 @@ Launch increments accumulate linearly and are not themselves compounded. Do not
 include the same launch in both `g` and `L`. Spare headroom means a fraction of
 serving capacity is intentionally unused: 20% headroom divides by `0.8`, rather
 than multiplying demand by `1.2`.
+
+The two organic methods are mutually exclusive. In driver mode, growth means
+active-user growth; session intensity, agent/model-call multiplier, cache
+avoidance and peak factor remain constant across the horizon. Cache avoidance
+means the fraction of model calls avoided entirely, not a KV/prefix-cache hit
+that still consumes model compute. Launch RPS is additional **post-cache
+backend** peak traffic: avoid counting it again in user growth. Multiplying
+daily average traffic by a user-entered peak factor is an assumption, not a
+modeled arrival distribution.
 
 **Illustrative example:** baseline `100,000 RPS`, annual growth `44%`, additional
 `1,000 RPS/month`, 20% spare headroom, `40 RPS/replica`, and eight GPUs/replica:
@@ -390,6 +436,60 @@ GPUs = 3,938 * 8 = 31,504
 This is scenario arithmetic, not benchmark evidence. Throughput must match
 model/version, precision, context/output mix, batching, concurrency and latency
 SLO. The calculator does not validate KV-cache fit, queueing, routing or failover.
+
+#### Reusable performance profiles
+
+Choose inline service throughput or a library profile. A linked profile supplies
+both `q` and `k`; editing it recalculates every linked service. Existing workspaces
+retain their inline values, and seeded library profiles are **synthetic**, not
+published NVIDIA benchmarks.
+
+The profile must match the service's GPU pool and exact configuration key, and
+the scenario's input/output token counts must lie inside its inclusive bounds.
+Its measurement date must be strictly before planning starts. Otherwise sizing
+is unavailable and the portfolio is partial: there is **no inline fallback**.
+The configuration key should identify model/version, precision, runtime,
+batching, concurrency and latency SLO. Profiles should declare sustainable
+throughput conservative across their entire stated token range; the portal does
+not interpolate token lengths, verify the benchmark or prove the validity range.
+Evidence marked `user-benchmark` is a user's attestation, not external verification.
+
+#### One-day seasonal forecast evidence
+
+For each selected service, keep only daily peak-RPS records strictly before
+planning starts. Evaluate three predictors:
+
+- **Last day:** preceding day's peak RPS.
+- **Weekly seasonal:** mean of the same weekday at offsets 7, 14, 21 and 28 days.
+- **Rolling average:** mean of the preceding 28 daily peaks.
+
+All predictors use the same eligible dates and require every preceding 28
+calendar days. Missing dates are not zeros and are not imputed. Require at least
+14 eligible evaluation days: use the earlier approximately two thirds for
+validation, while retaining at least seven validation and seven held-out days.
+Select the lowest-validation-MAE model, then report its later held-out evidence.
+Ties prefer the simpler predictor in the order listed above.
+
+```text
+MAE (RPS) = mean(abs(prediction - actual))
+WAPE (%) = sum(abs(prediction - actual)) / sum(actual) * 100
+bias (RPS) = mean(prediction - actual)
+```
+
+WAPE is unavailable when all actual peaks are zero. Positive bias means
+overprediction. JSON stores WAPE as a fraction; the UI converts it to a percentage.
+The UI shows validation/held-out scores for all methods, the
+selected method's held-out daily predictions, and a one-day prediction after the
+latest observation when trailing coverage permits. Each held-out prediction may
+use earlier held-out **observed** days, as a rolling one-day-ahead production
+forecast would; it is not a recursive multi-day forecast. Selection never uses
+held-out errors.
+
+Export JSON includes fold dates, all scores and selected-method predictions.
+Sparse data returns an explicit unavailable reason. This evaluates daily
+peak-RPS prediction only, not tail risk, SLO performance or six-month growth.
+No automatic promotion into the scenario planner, uncertainty interval, holiday
+model or drift detector is implemented.
 
 ### 6. Training model to compute and memory envelope
 
@@ -462,9 +562,10 @@ gap = total required - usable supply
 
 - A positive gap means shortage; zero or a negative gap means within the entered
   budget. A negative value represents spare budget, not a negative requirement.
-- Missing service baselines make the result **partial**, even though known
-  requirements are still displayed. "Complete" means baselines exist, not that
-  coverage, model accuracy or placement has been validated.
+- Missing historical baselines or incompatible selected performance evidence make
+  the result **partial**, even though known requirements are still displayed.
+  Driver scenarios need no history. "Complete" means sizing inputs are available,
+  not that coverage, model accuracy or placement has been validated.
 - All training plans/runs in the same month overlap for the peak envelope.
   Plans outside the horizon remain saved but do not enter that horizon's totals.
 - Additions are fully available from the beginning of their commissioning month
@@ -496,6 +597,14 @@ Requests cannot exceed peak RPS multiplied by the number of seconds in a day.
 Unavailable supply cannot exceed installed supply, and reserve cannot exceed
 the remaining supply. Consumption records are not checked against supply as
 though that static scenario inventory were a historical source of truth.
+
+Workspace schema version 2 includes driver settings and the performance library.
+Version-1 JSON and stored workspaces are migrated without changing historical
+demand methods or inline throughput. Migration clones the input and adds defaults;
+it does not rewrite the saved browser copy until an explicit edit is saved.
+Exports use version 2, and unknown future schema versions are rejected.
+The browser storage key remains `gpu-atlas-workspace-v1` for continuity; it is not
+the payload schema version.
 
 The editor requires explicit confirmation before replacing an existing daily
 record. Workspace imports are validated before confirmation/replacement.

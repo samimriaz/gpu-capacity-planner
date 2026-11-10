@@ -25,6 +25,18 @@
   function pool(value) {
     if (!POOLS.includes(value)) fail("Choose H100, H200 or B200; pools cannot be substituted automatically.");
   }
+  function defaultDrivers() {
+    return {activeUsers: 10000000, sessionsPerUser: 2, requestsPerSession: 5,
+      callsPerRequest: 1, cacheHitPct: 0, peakToAverage: 3};
+  }
+  function upgrade(state) {
+    if (!state || state.version !== 1) return state;
+    if (!Array.isArray(state.services)) fail("Legacy workspace requires services.");
+    return {...state, version: 2, benchmarks: [], services: state.services.map(s => ({
+      ...s, demandMethod: "historical", drivers: defaultDrivers(), benchmarkId: "",
+      workloadKey: s.id, inputTokens: 1024, outputTokens: 256,
+    }))};
+  }
   function serviceCheck(s) {
     text(s.id, "Service ID"); text(s.name, "Service name"); text(s.team, "Team");
     pool(s.pool);
@@ -34,6 +46,31 @@
     number(s.monthlyLaunchRps, "Additional peak RPS per month", 0, 1e9);
     number(s.headroom, "Spare headroom %", 0, 80);
     text(s.profile, "Performance profile assumptions");
+    if (!["historical", "drivers"].includes(s.demandMethod)) fail("Choose historical growth or demand drivers.");
+    if (typeof s.benchmarkId !== "string") fail("Benchmark selection must be a string.");
+    text(s.workloadKey, "Workload configuration key");
+    number(s.inputTokens, "Input tokens", 0, 1e7);
+    number(s.outputTokens, "Output tokens", 0, 1e7);
+    if (!s.drivers) fail("Demand-driver inputs are required.");
+    number(s.drivers.activeUsers, "Daily active users", 0, 1e12, true);
+    number(s.drivers.sessionsPerUser, "Sessions per user per day", 0, 1000);
+    number(s.drivers.requestsPerSession, "Requests per session", 0, 10000);
+    number(s.drivers.callsPerRequest, "Backend calls per request", 0, 1000);
+    number(s.drivers.cacheHitPct, "Cache hit %", 0, 100);
+    number(s.drivers.peakToAverage, "Peak-to-average ratio", 1, 1000);
+  }
+  function benchmarkCheck(b) {
+    text(b.id, "Profile ID"); text(b.name, "Profile name"); pool(b.pool);
+    text(b.workloadKey, "Workload configuration key");
+    text(b.evidence, "Benchmark evidence / assumptions");
+    date(b.measuredOn);
+    if (!["synthetic", "user-benchmark"].includes(b.source)) fail("Unknown performance evidence source.");
+    number(b.gpusPerReplica, "Profile GPUs per replica", 1, 1024, true);
+    number(b.rpsPerReplica, "Profile RPS at SLO", 0.0001, 1e9);
+    number(b.minInputTokens, "Minimum input tokens", 0, 1e7);
+    number(b.maxInputTokens, "Maximum input tokens", b.minInputTokens, 1e7);
+    number(b.minOutputTokens, "Minimum output tokens", 0, 1e7);
+    number(b.maxOutputTokens, "Maximum output tokens", b.minOutputTokens, 1e7);
   }
   function recordCheck(r, services) {
     date(r.date);
@@ -62,12 +99,19 @@
     number(t.runs, "Concurrent runs", 1, 1000, true);
   }
   function validate(state) {
-    if (!state || state.version !== 1) fail("Unsupported workspace version.");
+    state = upgrade(state);
+    if (!state || state.version !== 2) fail("Unsupported workspace version.");
     month(state.startMonth);
     if (!Array.isArray(state.services) || !state.services.length || state.services.length > 1000) fail("Workspace requires 1–1,000 services.");
     if (!Array.isArray(state.records) || state.records.length > 100000) fail("At most 100,000 consumption rows are supported.");
     if (!Array.isArray(state.training) || state.training.length > 1000) fail("At most 1,000 training plans are supported.");
     state.services.forEach(serviceCheck);
+    if (!Array.isArray(state.benchmarks) || state.benchmarks.length > 1000) fail("At most 1,000 performance profiles are supported.");
+    state.benchmarks.forEach(benchmarkCheck);
+    if (new Set(state.benchmarks.map(b => b.id)).size !== state.benchmarks.length) fail("Performance profile IDs must be unique.");
+    for (const service of state.services) {
+      if (service.benchmarkId && !state.benchmarks.some(b => b.id === service.benchmarkId)) fail("Service references an unknown performance profile.");
+    }
     if (new Set(state.services.map(s => s.id)).size !== state.services.length) fail("Service IDs must be unique.");
     const keys = new Set();
     state.records.forEach(r => {
@@ -129,11 +173,81 @@
   }
   function inference(state, service, index) {
     const base = baseline(state, service.id);
-    if (!base) return {available: false, reason: "No consumption baseline; enter daily data.", gpus: null, peakRps: null};
-    const peakRps = base.peakRps * (1 + service.annualGrowth / 100) ** ((index + 1) / 12) +
-      service.monthlyLaunchRps * (index + 1);
-    const replicas = Math.ceil(peakRps / (1 - service.headroom / 100) / service.rpsPerReplica);
-    return {available: true, peakRps, replicas, gpus: replicas * service.gpusPerReplica, base};
+    if (service.demandMethod === "historical" && !base) return {available: false, reason: "No consumption baseline; enter daily data.", gpus: null, peakRps: null};
+    const m = index + 1;
+    let organicRps;
+    if (service.demandMethod === "drivers") {
+      const d = service.drivers;
+      organicRps = d.activeUsers * (1 + service.annualGrowth / 100) ** (m / 12) *
+        d.sessionsPerUser * d.requestsPerSession * d.callsPerRequest *
+        (1 - d.cacheHitPct / 100) / 86400 * d.peakToAverage;
+    } else organicRps = base.peakRps * (1 + service.annualGrowth / 100) ** (m / 12);
+    const launchRps = service.monthlyLaunchRps * m;
+    const peakRps = organicRps + launchRps;
+    const performance = profileFor(state, service);
+    if (!performance.available) return {...performance, gpus: null, peakRps, organicRps, launchRps, base};
+    const replicas = Math.ceil(peakRps / (1 - service.headroom / 100) / performance.rpsPerReplica);
+    return {available: true, peakRps, organicRps, launchRps, replicas,
+      gpus: replicas * performance.gpusPerReplica, base, performance};
+  }
+  function profileFor(state, service) {
+    if (!service.benchmarkId) return {available: true, source: "inline-assumption",
+      name: "Inline service assumption", rpsPerReplica: service.rpsPerReplica, gpusPerReplica: service.gpusPerReplica};
+    const b = state.benchmarks.find(b => b.id === service.benchmarkId);
+    if (!b) return {available: false, reason: "Selected performance profile no longer exists."};
+    if (b.pool !== service.pool || b.workloadKey !== service.workloadKey) {
+      return {available: false, reason: "Performance profile pool/configuration does not match the service."};
+    }
+    if (b.measuredOn >= `${state.startMonth}-01`) {
+      return {available: false, reason: "Performance evidence is dated on or after planning starts; choose earlier evidence or a later planning window."};
+    }
+    if (service.inputTokens < b.minInputTokens || service.inputTokens > b.maxInputTokens ||
+        service.outputTokens < b.minOutputTokens || service.outputTokens > b.maxOutputTokens) {
+      return {available: false, reason: "Token mix lies outside the performance profile validity range; benchmark this configuration."};
+    }
+    return {...b, available: true};
+  }
+  const FORECAST_MODELS = ["last_day", "seasonal_7d", "rolling_28d"];
+  function predictPeak(history, target, method) {
+    date(target);
+    const values = [];
+    for (let offset = 1; offset <= 28; offset++) {
+      const key = new Date(Date.parse(target) - offset * DAY).toISOString().slice(0, 10);
+      if (!history.has(key)) return null;
+      values.push(history.get(key));
+    }
+    if (method === "last_day") return values[0];
+    if (method === "seasonal_7d") return values[6];
+    if (method === "rolling_28d") return values.reduce((n, value) => n + value, 0) / 28;
+    fail("Unknown peak-demand forecast method.");
+  }
+  function forecastEvidence(state, serviceId) {
+    const rows = state.records.filter(r => r.serviceId === serviceId && r.date < `${state.startMonth}-01`)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const history = new Map(rows.map(r => [r.date, r.peakRps]));
+    const folds = rows.filter(r => predictPeak(history, r.date, "last_day") !== null);
+    if (folds.length < 14) return {available: false, reason: "Need at least 14 evaluation days, each with 28 complete preceding daily records (minimum 42 continuous days).", evaluationDays: folds.length};
+    const validationSize = Math.max(7, Math.min(folds.length - 7, Math.floor(folds.length * 2 / 3)));
+    const scored = FORECAST_MODELS.map(method => {
+      const predictions = folds.map((r, i) => ({date: r.date, actual: r.peakRps,
+        predicted: predictPeak(history, r.date, method), split: i < validationSize ? "validation" : "held_out"}));
+      const score = split => {
+        const selected = predictions.filter(p => p.split === split);
+        const absolute = selected.reduce((n, p) => n + Math.abs(p.predicted - p.actual), 0);
+        const total = selected.reduce((n, p) => n + p.actual, 0);
+        return {days: selected.length, mae: absolute / selected.length,
+          bias: selected.reduce((n, p) => n + p.predicted - p.actual, 0) / selected.length,
+          wape: total > 0 ? absolute / total : null};
+      };
+      return {method, validation: score("validation"), heldOut: score("held_out"), predictions};
+    });
+    const best = [...scored].sort((a, b) => a.validation.mae - b.validation.mae)[0];
+    const nextDate = new Date(Date.parse(rows.at(-1).date) + DAY).toISOString().slice(0, 10);
+    return {available: true, selected: best.method, scored, evaluationDays: folds.length,
+      nextDate, nextPeakRps: predictPeak(history, nextDate, best.method),
+      source: rows.every(r => r.source === "synthetic") ? "synthetic" : "user-entered/mixed",
+      horizon: "One-day-ahead daily peak RPS; not a six-month capacity forecast.",
+      predictions: best.predictions.filter(p => p.split === "held_out")};
   }
   function training(plan) {
     const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
@@ -218,7 +332,16 @@
       });
     }
     return validate({
-      version: 1, startMonth: "2026-12", services, records,
+      version: 2, startMonth: "2026-12",
+      services: services.map(s => ({...s, demandMethod: "historical", drivers: defaultDrivers(),
+        benchmarkId: "", workloadKey: `${s.id}-demo-fp16-slo`, inputTokens: 1024, outputTokens: 256})),
+      benchmarks: services.map(s => ({
+        id: `profile-${s.id}`, name: `${s.name} demo profile`, pool: s.pool,
+        workloadKey: `${s.id}-demo-fp16-slo`, gpusPerReplica: s.gpusPerReplica,
+        rpsPerReplica: s.rpsPerReplica, minInputTokens: 0, maxInputTokens: 2048,
+        minOutputTokens: 0, maxOutputTokens: 512, measuredOn: "2026-11-09",
+        source: "synthetic", evidence: "Illustrative only; not a real hardware benchmark. Match model, precision, runtime and latency SLO.",
+      })), records,
       training: [
         {id: "train-1", name: "Foundation model refresh", serviceId: "assistant", pool: "H200", month: "2027-01",
           parametersB: 405, tokensB: 2000, days: 12, peakTflops: 989, mfu: 40, memoryGB: 141, bytesPerParameter: 16, block: 256, runs: 2},
@@ -233,7 +356,8 @@
       },
     });
   }
-  const api = {POOLS, validate, number, date, months, growth, trend, baseline, inference, training, portfolio, comparePeriods, demo};
+  const api = {POOLS, validate, upgrade, defaultDrivers, number, date, months, growth, trend, baseline,
+    inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

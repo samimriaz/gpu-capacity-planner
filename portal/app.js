@@ -14,7 +14,9 @@
   let initialError = "";
   try {
     const saved = localStorage.getItem(KEY);
-    state = saved ? M.validate(JSON.parse(saved)) : M.demo();
+    const parsed = saved ? JSON.parse(saved) : null;
+    state = parsed ? M.validate(parsed) : M.demo();
+    if (parsed?.version === 1) initialError = "Your version-1 workspace has been upgraded in memory. Existing historical-growth calculations are preserved. Save an input or export to retain the new format; the original stored copy is unchanged until you save.";
   } catch (error) {
     state = M.demo();
     storageBlocked = true;
@@ -32,6 +34,8 @@
   const titles = {
     overview: ["Organization consumption", "Understand service footprints, demand growth, and the baseline behind your capacity plan.", "+ Add consumption"],
     inference: ["Inference growth planner", "Translate service demand into hardware requirements using explicit RPS-at-SLO profiles.", "+ Register service"],
+    benchmarks: ["Performance profile library", "Reuse evidence-backed serving profiles, with explicit configuration and token-range safeguards.", "+ Add profile"],
+    forecasts: ["Forecast evidence", "Compare one-day-ahead seasonal baselines using chronological validation and held-out observations.", "Export forecast evidence"],
     training: ["Six-month training roadmap", "Turn model plans into compute estimates, gang sizes, and time-phased requirements.", "+ Add training plan"],
     capacity: ["GPU capacity requirements", "Bring inference growth, training plans, and compatible supply into one planning view.", "Export requirements"],
     data: ["Data & assumptions", "Inspect provenance, maintain supply, and take your planning workspace with you.", "Export workspace"],
@@ -45,7 +49,7 @@
   function save(next, message, override = false) {
     try {
       if (storageBlocked && !override) throw new Error("Saving is blocked because stored data could not be loaded. Import a valid workspace or explicitly reset.");
-      M.validate(next);
+      next = M.validate(next);
       localStorage.setItem(KEY, JSON.stringify(next));
       state = next;
       storageBlocked = false;
@@ -124,14 +128,39 @@
     const rows = services.map(s => {
       const base = M.baseline(state, s.id);
       const first = M.inference(state, s, 0), last = M.inference(state, s, 5);
-      return `<tr><td class="service-name">${esc(s.name)}<span class="subtext">${esc(s.team)}</span></td><td>${esc(s.pool)}</td><td>${base ? fmt(base.peakRps) : "No baseline"}<span class="subtext">${base ? `${base.days}/28 days · through ${base.end}` : "Enter daily consumption"}</span></td><td>${pct(s.annualGrowth)}<span class="subtext">User assumption, not fitted YoY</span></td><td>${s.gpusPerReplica} GPUs / ${fmt(s.rpsPerReplica, 2)} RPS</td><td>${fmt(first.gpus)}</td><td class="accent">${fmt(last.gpus)}</td><td><button class="text-button" data-edit-service="${esc(s.id)}">Configure</button></td></tr>`;
+      const performance = M.profileFor(state, s);
+      return `<tr><td class="service-name">${esc(s.name)}<span class="subtext">${esc(s.team)}</span></td><td>${esc(s.pool)}</td><td>${base ? fmt(base.peakRps) : "No baseline"}<span class="subtext">${base ? `${base.days}/28 days · through ${base.end}` : "Driver scenarios can work without history"}</span></td><td>${s.demandMethod === "drivers" ? "User demand drivers" : "Historical peak growth"}<span class="subtext">${pct(s.annualGrowth)} annual ${s.demandMethod === "drivers" ? "user" : "traffic"} growth assumption</span></td><td>${performance.available ? `${performance.gpusPerReplica} GPUs / ${fmt(performance.rpsPerReplica, 2)} RPS` : "Incompatible profile"}<span class="subtext">${esc(performance.available ? performance.name : performance.reason)}</span></td><td>${fmt(first.gpus)}</td><td class="accent">${fmt(last.gpus)}</td><td><button class="text-button" data-edit-service="${esc(s.id)}">Configure</button></td></tr>`;
     }).join("");
     const projection = months.map((m, i) => ({month: m, gpus: services.reduce((n, s) => n + (M.inference(state, s, i).gpus || 0), 0)}));
-    const incomplete = services.some(s => !M.baseline(state, s.id));
-    return `<div class="callout">Demand-led, not utilization extrapolation. Growth rates and launch increments are user assumptions. Seeded RPS-at-SLO profiles are illustrative, not benchmarks. ${incomplete ? "<strong>Some services have no baseline; plotted totals are incomplete.</strong>" : ""}</div>
+    const incomplete = services.some(s => !M.inference(state, s, 0).available);
+    const decomposition = services.map(s => {
+      const e = M.inference(state, s, 5);
+      return `<tr><td>${esc(s.name)}</td><td>${s.demandMethod === "drivers" ? "DAU × sessions × requests × calls × cache misses × peak ratio" : "Recorded peak × compounded annual traffic growth"}</td><td>${fmt(e.organicRps, 1)}</td><td>${fmt(e.launchRps, 1)}</td><td>${fmt(e.peakRps, 1)}</td><td>${esc(e.available ? "Scenario inputs available" : e.reason)}</td></tr>`;
+    }).join("");
+    return `<div class="callout">Demand-led, not utilization extrapolation. Drivers, growth, cache hits and launch increments are assumptions. Library profiles are only as trustworthy as their evidence; synthetic profiles are not benchmarks. ${incomplete ? "<strong>Missing demand or incompatible profiles make plotted totals incomplete.</strong>" : ""}</div>
       <section class="panel"><div class="panel-heading"><div><h2>Six-month inference requirement</h2><p>Peak RPS → headroom-adjusted replicas → GPU count · arithmetic totals are not interchangeable capacity</p></div></div><div class="chart-wrap">${chart(projection, [{key: "gpus", name: "Inference GPUs", color: "#8daaff"}], "Monthly inference GPU scenario")}</div></section>
-      <section class="panel"><div class="panel-heading"><div><h2>Service performance & growth profiles</h2><p>Baseline: maximum daily peak RPS in each service's latest 28-day observed window.</p></div></div>${table(["Service", "Pool", "Baseline peak RPS", "Annual growth", "Replica profile", months[0], months[5], ""], rows)}</section>
-      <section class="panel"><div class="panel-heading"><h2>Calculation contract</h2></div><div class="panel-body description"><strong>Monthly peak RPS</strong> = baseline × (1 + annual growth)^(months / 12) + cumulative launch increment.<br><strong>Replicas</strong> = ceil(peak RPS / (1 − spare headroom fraction) / sustainable RPS per replica).<br><strong>GPUs</strong> = replicas × GPUs per replica. Spare headroom is separate from fleet failure reserve.<br>Configure a profile that matches model, context/output mix, precision, batching and latency SLO. This prototype does not infer those from FLOPs, implement queueing simulation, or calibrate uncertainty intervals.</div></section>`;
+      <section class="panel"><div class="panel-heading"><div><h2>Service performance & growth profiles</h2><p>Configure demand method, drivers, configuration key, token mix and optional reusable benchmark.</p></div></div>${table(["Service", "Pool", "Baseline peak RPS", "Demand method", "Replica profile", months[0], months[5], ""], rows)}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>Month-six demand decomposition</h2><p>Organic demand and named launch increments are separate to prevent double counting.</p></div></div>${table(["Service", "Organic demand logic", "Organic peak RPS", "Launch RPS", "Total peak RPS", "Input status"], decomposition)}</section>
+      <section class="panel"><div class="panel-heading"><h2>Calculation contract</h2></div><div class="panel-body description"><strong>Historical mode:</strong> baseline peak × (1 + annual traffic growth)^(months / 12).<br><strong>Driver mode:</strong> daily active users × compounded user growth × sessions/user/day × requests/session × backend calls/request × (1 − cache hit fraction) × peak-to-average ratio / 86,400.<br>Add cumulative launch RPS once, after either organic calculation. The two demand methods are alternatives, not additive.<br><strong>Replicas</strong> = ceil(peak RPS / (1 − spare headroom fraction) / sustainable RPS per replica).<br><strong>GPUs</strong> = replicas × GPUs per replica. Selected library profiles must match the pool, workload key and token range; there is no silent fallback to inline throughput.<br>One-day backtests in Forecast evidence do not validate or replace these six-month scenarios. Queueing, memory/KV-cache fit and statistical uncertainty remain unmodeled.</div></section>`;
+  }
+  function benchmarksView() {
+    const services = chosenServices();
+    const relevant = new Set(services.map(s => s.workloadKey));
+    const profiles = state.benchmarks.filter(b => (poolFilter === "all" || b.pool === poolFilter) &&
+      ((serviceFilter === "all" && teamFilter === "all") || relevant.has(b.workloadKey)));
+    return `<div class="callout">Profiles are explicit configurations, not universal hardware speeds. A workload key must encode the model/version, precision, serving engine, batching/concurrency and latency SLO. Token ranges are user-attested validity bounds, not automatically verified measurements.</div>
+      <section class="panel"><div class="panel-heading"><div><h2>Reusable RPS-at-SLO profiles</h2><p>Select a profile in a service's Configure form. Inline assumptions remain available for existing services.</p></div></div>${table(["Profile / configuration", "Pool", "Replica throughput", "Input / output range", "Evidence", "Date", ""], profiles.map(b => `<tr><td class="service-name">${esc(b.name)}<span class="subtext">${esc(b.workloadKey)}</span></td><td>${b.pool}</td><td>${b.gpusPerReplica} GPUs / ${fmt(b.rpsPerReplica, 2)} RPS</td><td>${fmt(b.minInputTokens)}–${fmt(b.maxInputTokens)} in<br>${fmt(b.minOutputTokens)}–${fmt(b.maxOutputTokens)} out</td><td><span class="badge ${b.source === "synthetic" ? "" : "green"}">${b.source === "synthetic" ? "Synthetic" : "User-supplied benchmark"}</span><span class="subtext">${esc(b.evidence)}</span></td><td>${b.measuredOn}</td><td><button class="text-button" data-edit-benchmark="${esc(b.id)}">Edit</button></td></tr>`).join(""))}</section>
+      <div class="callout info">No interpolation, extrapolation or automatic substitution is performed. A mismatched pool/key or out-of-range token mix makes the service requirement unavailable and portfolio totals partial. Editing a shared profile recalculates every linked service. User-supplied evidence is not independently verified.</div>`;
+  }
+  function forecastsView() {
+    const evidence = chosenServices().map(s => ({service: s, result: M.forecastEvidence(state, s.id)}));
+    const rows = evidence.map(({service: s, result: e}) => e.available ? e.scored.map(r => `<tr><td>${esc(s.name)}<span class="subtext">${esc(e.source)} · ${e.evaluationDays} folds</span></td><td>${r.method}${r.method === e.selected ? ' <span class="badge green">Selected</span>' : ""}</td><td>${fmt(r.validation.mae, 1)}</td><td>${fmt(r.heldOut.mae, 1)}</td><td>${r.heldOut.wape === null ? "Not available" : `${fmt(r.heldOut.wape * 100, 1)}%`}</td><td>${fmt(r.heldOut.bias, 1)}</td><td>${r.validation.days} / ${r.heldOut.days}</td></tr>`).join("") :
+      `<tr><td>${esc(s.name)}</td><td colspan="6">${esc(e.reason)} Eligible evaluation days: ${e.evaluationDays}.</td></tr>`).join("");
+    const plots = evidence.filter(({result}) => result.available).map(({service: s, result: e}) =>
+      `<section class="panel"><div class="panel-heading"><div><h2>${esc(s.name)}: held-out daily peak</h2><p>${e.selected} selected on earlier validation MAE · next observed-day prediction for ${e.nextDate}: ${fmt(e.nextPeakRps, 1)} RPS${e.nextPeakRps === null ? " (recent history incomplete)" : ""}</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Actual peak RPS</span><span><i class="blue"></i>One-day-ahead prediction</span></div></div><div class="chart-wrap">${chart(e.predictions.slice(-28), [{key: "actual", name: "Actual peak RPS", color: "#b7ef6a"}, {key: "predicted", name: "Predicted peak RPS", color: "#8daaff"}], `${s.name}: held-out actual and predicted daily peak RPS`)}</div></section>`).join("");
+    return `<div class="callout">This is a <strong>one-day-ahead daily peak-RPS</strong> evaluation, not validation of a six-month capacity forecast. Only records before planning starts are eligible. No gaps are imputed. Synthetic-history scores demonstrate mechanics, not real-world predictive accuracy.</div>
+      <section class="panel"><div class="panel-heading"><div><h2>Chronological model comparison</h2><p>28 complete prior days per prediction; at least seven earlier validation and seven later held-out evaluation days. Lower MAE is better.</p></div></div>${table(["Service", "Method", "Validation MAE (RPS)", "Held-out MAE (RPS)", "Held-out WAPE", "Bias (RPS)", "Validation / holdout days"], rows)}</section>
+      ${plots}<section class="panel"><div class="panel-heading"><h2>Evaluation contract</h2></div><div class="panel-body description">Last-day persistence, the mean of four prior matching weekdays and rolling 28-day mean share identical evaluation dates. The earlier approximately two-thirds selects the method; the later remainder is held out, with at least seven days in each split. Every prediction uses only observations before that prediction date.<br>Positive bias means overprediction. WAPE is unavailable when held-out actual peak totals are zero. No confidence interval or automatic six-month extrapolation is inferred from these scores.</div></section>`;
   }
   function trainingView() {
     const ids = new Set(state.services.filter(s => (serviceFilter === "all" || s.id === serviceFilter) &&
@@ -167,17 +196,18 @@
     });
     const gaps = rows.filter(r => r.gap > 0);
     const largest = gaps.length ? Math.max(...gaps.map(r => r.gap)) : 0;
-    return `<div class="kpis">${metric("Peak modeled requirement", fmt(Math.max(...points.map(p => p.required))), "Arithmetic fleet total; compare compatible pools", true)}${metric("Largest pool shortage", fmt(largest), "One pool/month; not a summed fleet deficit")}${metric("Pool-months with shortage", fmt(gaps.length), `Across ${rows.length} selected pool-months`)}${metric("Baseline completeness", rows.every(r => r.complete) ? "Complete" : "Incomplete", "Complete means inputs exist, not validated accuracy")}</div>
+    return `<div class="kpis">${metric("Peak modeled requirement", fmt(Math.max(...points.map(p => p.required))), "Arithmetic fleet total; compare compatible pools", true)}${metric("Largest pool shortage", fmt(largest), "One pool/month; not a summed fleet deficit")}${metric("Pool-months with shortage", fmt(gaps.length), `Across ${rows.length} selected pool-months`)}${metric("Sizing input completeness", rows.every(r => r.complete) ? "Complete" : "Incomplete", "Demand and compatible performance inputs; not validated accuracy")}</div>
       <div class="callout ${gaps.length ? "" : "info"}">${serviceFilter !== "all" || teamFilter !== "all" ? "Selected service/team demand is compared with shared organization supply; it is not a team entitlement. " : ""}No automatic cross-pool substitution. Inference headroom is in demand; protected failure reserve is removed from supply. Training gangs in the same month overlap conservatively. Other workloads, maintenance changes and retirements beyond entered unavailable counts are not modeled.</div>
       <section class="panel"><div class="panel-heading"><div><h2>Demand envelope vs eligible supply</h2><p>A fleet surplus can hide a compatible-pool shortage. Inspect the ledger below.</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Required GPUs</span><span><i class="blue"></i>Usable supply after reserve</span></div></div><div class="chart-wrap">${chart(points, [{key: "required", name: "Required GPUs", color: "#b7ef6a"}, {key: "usable", name: "Usable supply", color: "#8daaff", dashed: true}], "Monthly demand and supply; arithmetic totals across selected pools")}</div></section>
-      <section class="panel"><div class="panel-heading"><div><h2>Capacity requirement ledger</h2><p>Negative gap = spare budget; positive gap = shortage. Missing baselines make totals partial.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["Month", "Compatible pool", "Inference", "Training peak", "Total required", "Usable supply", "Gap / spare", "Status"], rows.map(r => `<tr><td>${r.month}</td><td><span class="badge">${r.pool}</span></td><td>${fmt(r.inference)}</td><td>${fmt(r.training)}</td><td>${fmt(r.required)}</td><td>${fmt(r.usable)}</td><td>${r.gap > 0 ? "+" : ""}${fmt(r.gap)}</td><td><span class="badge ${!r.complete || r.gap > 0 ? "red" : "green"}">${!r.complete ? "Partial inputs" : r.gap > 0 ? "Shortage" : "Within budget"}</span></td></tr>`).join(""))}</section>`;
+      <section class="panel"><div class="panel-heading"><div><h2>Capacity requirement ledger</h2><p>Negative gap = spare budget; positive gap = shortage. Missing demand or compatible performance evidence makes totals partial.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["Month", "Compatible pool", "Inference", "Training peak", "Total required", "Usable supply", "Gap / spare", "Status"], rows.map(r => `<tr><td>${r.month}</td><td><span class="badge">${r.pool}</span></td><td>${fmt(r.inference)}</td><td>${fmt(r.training)}</td><td>${fmt(r.required)}</td><td>${fmt(r.usable)}</td><td>${r.gap > 0 ? "+" : ""}${fmt(r.gap)}</td><td><span class="badge ${!r.complete || r.gap > 0 ? "red" : "green"}">${!r.complete ? "Partial inputs" : r.gap > 0 ? "Shortage" : "Within budget"}</span></td></tr>`).join(""))}</section>`;
   }
   function dataView() {
     const synthetic = state.records.filter(r => r.source === "synthetic").length;
     return `<div class="callout">This is a browser-local scenario workspace, not a live company telemetry feed. ${synthetic} of ${state.records.length} consumption rows are synthetic. User-entered rows are manual observations, not verified connector measurements. No data is sent to a backend.</div>
       <section class="panel"><div class="panel-heading"><div><h2>Supply by compatible GPU pool</h2><p>Supply = installed − unavailable − protected reserve + additions from their commissioning month.</p></div><button class="button subtle" data-action="supply">Edit supply</button></div>${table(["Pool", "Installed", "Unavailable", "Protected reserve", "Base usable"], M.POOLS.map(p => {const s = state.supply[p]; return `<tr><td>${p}</td><td>${fmt(s.installed)}</td><td>${fmt(s.unavailable)}</td><td>${fmt(s.reserve)}</td><td>${fmt(s.installed - s.unavailable - s.reserve)}</td></tr>`;}).join(""))}</section>
       <section class="panel"><div class="panel-heading"><div><h2>Commissioned additions</h2><p>Capacity becomes usable at the start of the selected month; readiness is a user assumption.</p></div><button class="button subtle" data-action="addition">+ Addition</button></div>${table(["Pool", "Available from", "GPUs", ""], state.supply.additions.map((a, i) => `<tr><td>${a.pool}</td><td>${a.month}</td><td>${fmt(a.gpus)}</td><td><button class="text-button" data-remove-addition="${i}">Remove</button></td></tr>`).join(""))}</section>
-      <section class="panel"><div class="panel-heading"><h2>Workspace portability</h2></div><div class="panel-body"><p class="description">Export includes all service profiles, daily records, training plans and supply assumptions. Import replaces this workspace after validation and confirmation. Local storage is scoped to this browser/location, not shared across users. Do not enter sensitive information on a shared device.</p><div class="data-tools"><button class="button subtle" data-export-workspace>Export JSON</button><label class="button subtle">Import JSON <input type="file" id="import-file" accept=".json,application/json"></label><button class="button subtle" data-action="reset">Reset to demo</button></div></div></section>
+      <section class="panel"><div class="panel-heading"><h2>Workspace portability</h2></div><div class="panel-body"><p class="description">Version-2 exports include service profiles, demand drivers, reusable performance evidence, daily records, training plans and supply assumptions. Version-1 workspaces retain historical sizing and inline throughput when upgraded. Import replaces this workspace after validation and confirmation. Local storage is scoped to this browser/location, not shared across users. Do not enter sensitive information on a shared device.</p><div class="data-tools"><button class="button subtle" data-export-workspace>Export JSON</button><label class="button subtle">Import JSON <input type="file" id="import-file" accept=".json,application/json"></label><button class="button subtle" data-action="reset">Reset to demo</button></div></div></section>
+      <section class="panel"><div class="panel-heading"><h2>Demand drivers and forecast evidence</h2></div><div class="panel-body description">Choose historical traffic growth or a business-driver scenario, not both. Drivers multiply daily active users, sessions, requests and model calls, remove calls avoided entirely by cache, divide by 86,400, then apply a peak-to-average factor. Annual growth applies to users in driver mode. Launch RPS is additional post-cache backend peak traffic, added once.<br>Linked performance profiles must match pool, configuration and token range, with evidence dated before planning starts; mismatches are unavailable, never an inline fallback. Token-range validity is user-attested, not automatically verified.<br>Forecast evidence compares last-day, weekly-seasonal and rolling-28-day predictors on identical daily folds. Selection uses only earlier validation MAE; later held-out errors are reported separately. This tests rolling one-day-ahead peak-RPS predictions, not the six-month scenario, and does not provide calibrated uncertainty.</div></section>
       <section class="panel"><div class="panel-heading"><h2>Evidence & limitations</h2></div><div class="panel-body description"><strong>Observed:</strong> only what you manually enter; not independently verified.<br><strong>Derived:</strong> allocation summaries, comparable-period growth, replicas, compute/memory screens and monthly gaps.<br><strong>Synthetic:</strong> seeded 200,000-GPU inventory, 60-day service history, performance profiles and roadmaps. Independent of the Philly experiment.<br><strong>Not implemented:</strong> collectors, real-time streaming, effective-dated service migrations, shared-GPU attribution, authentication, uncertainty calibration, topology validation or scheduler enforcement.<br>FLOPs describe work; FLOP/s describes rate. Busy-time utilization must not be multiplied by hardware peak and called measured FLOP/s.<br>Historical YoY/two-year comparisons remain unavailable without complete matching history. Every growth rate in the inference planner is a scenario assumption.<br><a href="../README.md">Read the framework and reproduction instructions</a></div></section>`;
   }
   function render() {
@@ -195,7 +225,8 @@
       if (b.dataset.view === view) b.setAttribute("aria-current", "page");
       else b.removeAttribute("aria-current");
     });
-    $("#content").innerHTML = ({overview, inference: inferenceView, training: trainingView, capacity: capacityView, data: dataView})[view]();
+    $("#content").innerHTML = ({overview, inference: inferenceView, benchmarks: benchmarksView, forecasts: forecastsView,
+      training: trainingView, capacity: capacityView, data: dataView})[view]();
   }
   function field(name, label, value, type = "number", extra = "", help = "") {
     return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra} required>${help ? `<span class="help">${help}</span>` : ""}</label>`;
@@ -208,16 +239,47 @@
     $("#form-error").textContent = "";
     let fields = "", title = "", intro = "";
     if (kind === "service") {
-      const s = state.services.find(s => s.id === id) || {name: "", team: "", pool: "H100", gpusPerReplica: 8, rpsPerReplica: 20, annualGrowth: 30, monthlyLaunchRps: 0, headroom: 20, profile: ""};
+      const s = state.services.find(s => s.id === id) || {name: "", team: "", pool: "H100", gpusPerReplica: 8, rpsPerReplica: 20, annualGrowth: 30, monthlyLaunchRps: 0, headroom: 20, profile: "",
+        demandMethod: "historical", benchmarkId: "", workloadKey: "", inputTokens: 1024, outputTokens: 256, drivers: M.defaultDrivers()};
       title = id ? "Configure service profile" : "Register a service";
-      intro = "Enter a sustainable throughput measured at your latency SLO, model and workload mix. All initial values are assumptions. New services need a daily consumption row before forecasting.";
+      intro = "Choose historical-peak growth OR a driver scenario. Historical mode needs consumption history; drivers can plan a new service. Linked profiles must match configuration and token range. Inline values are used only when no library profile is selected.";
       fields = field("name", "Service name", s.name, "text", 'maxlength="150"') + field("team", "Owning team", s.team, "text", 'maxlength="150"') +
         selectField("pool", "Compatible GPU pool", poolOptions(s.pool)) + field("gpusPerReplica", "GPUs per replica", s.gpusPerReplica, "number", 'min="1" max="1024" step="1"') +
         field("rpsPerReplica", "Sustainable RPS per replica at SLO", s.rpsPerReplica, "number", 'min="0.0001" max="1000000000" step="any"') +
-        field("annualGrowth", "Annual demand growth (%)", s.annualGrowth, "number", 'min="-90" max="1000" step="any"') +
+        field("annualGrowth", "Annual growth (%): traffic in historical mode; users in driver mode", s.annualGrowth, "number", 'min="-90" max="1000" step="any"') +
         field("monthlyLaunchRps", "Additional peak RPS added each month", s.monthlyLaunchRps, "number", 'min="0" max="1000000000" step="any"', "Separate named initiative assumption; do not include it again in organic growth.") +
         field("headroom", "Spare serving headroom (%)", s.headroom, "number", 'min="0" max="80" step="any"') +
-        field("profile", "Model / precision / context mix / latency SLO / benchmark evidence", s.profile, "text", 'maxlength="150"');
+        field("profile", "Inline performance evidence / assumptions", s.profile, "text", 'maxlength="150"') +
+        selectField("demandMethod", "Organic demand method", ["historical", "drivers"].map(v => `<option value="${v}" ${s.demandMethod === v ? "selected" : ""}>${v === "historical" ? "Historical peak + annual traffic growth" : "Business demand drivers + annual user growth"}</option>`).join("")) +
+        selectField("benchmarkId", "Reusable performance profile", `<option value="">Use inline service assumption</option>${state.benchmarks.map(b => `<option value="${esc(b.id)}" ${s.benchmarkId === b.id ? "selected" : ""}>${esc(b.name)} (${b.pool}; ${b.source})</option>`).join("")}`) +
+        field("workloadKey", "Configuration key (model/version + precision + runtime + SLO)", s.workloadKey, "text", 'maxlength="150"', "Must exactly match a selected library profile. Do not reuse a key for a different configuration.") +
+        field("inputTokens", "Scenario input tokens / request", s.inputTokens, "number", 'min="0" max="10000000" step="any"') +
+        field("outputTokens", "Scenario output tokens / request", s.outputTokens, "number", 'min="0" max="10000000" step="any"') +
+        '<h3 class="wide">Demand drivers (used only in driver mode)</h3>' +
+        field("activeUsers", "Daily active users at scenario baseline", s.drivers.activeUsers, "number", 'min="0" max="1000000000000" step="1"') +
+        field("sessionsPerUser", "Sessions per active user / day", s.drivers.sessionsPerUser, "number", 'min="0" max="1000" step="any"') +
+        field("requestsPerSession", "User requests per session", s.drivers.requestsPerSession, "number", 'min="0" max="10000" step="any"') +
+        field("callsPerRequest", "Backend model calls per user request", s.drivers.callsPerRequest, "number", 'min="0" max="1000" step="any"') +
+        field("cacheHitPct", "Backend calls avoided by cache (%)", s.drivers.cacheHitPct, "number", 'min="0" max="100" step="any"') +
+        field("peakToAverage", "Peak-to-average backend traffic ratio", s.drivers.peakToAverage, "number", 'min="1" max="1000" step="any"');
+    } else if (kind === "benchmark") {
+      const b = state.benchmarks.find(b => b.id === id) || {name: "", pool: "H100", workloadKey: "",
+        gpusPerReplica: 8, rpsPerReplica: 20, minInputTokens: 0, maxInputTokens: 2048,
+        minOutputTokens: 0, maxOutputTokens: 512, measuredOn: new Date().toISOString().slice(0, 10),
+        source: "user-benchmark", evidence: ""};
+      title = id ? "Edit reusable performance profile" : "Add performance evidence";
+      intro = "User-entered measurements are not independently verified. Encode model/version, precision, runtime, batching/concurrency and latency SLO in the configuration key. Changing this shared profile affects all linked services.";
+      fields = field("name", "Profile name", b.name, "text", 'maxlength="150"') + selectField("pool", "GPU pool", poolOptions(b.pool)) +
+        field("workloadKey", "Configuration key", b.workloadKey, "text", 'maxlength="150"') +
+        field("gpusPerReplica", "GPUs per replica", b.gpusPerReplica, "number", 'min="1" max="1024" step="1"') +
+        field("rpsPerReplica", "Sustainable RPS per replica at SLO", b.rpsPerReplica, "number", 'min="0.0001" max="1000000000" step="any"') +
+        field("minInputTokens", "Minimum validated input tokens", b.minInputTokens, "number", 'min="0" max="10000000" step="any"') +
+        field("maxInputTokens", "Maximum validated input tokens", b.maxInputTokens, "number", 'min="0" max="10000000" step="any"') +
+        field("minOutputTokens", "Minimum validated output tokens", b.minOutputTokens, "number", 'min="0" max="10000000" step="any"') +
+        field("maxOutputTokens", "Maximum validated output tokens", b.maxOutputTokens, "number", 'min="0" max="10000000" step="any"') +
+        field("measuredOn", "Evidence date", b.measuredOn, "date") +
+        selectField("source", "Evidence provenance", `<option value="user-benchmark" ${b.source === "user-benchmark" ? "selected" : ""}>User-supplied benchmark (unverified)</option><option value="synthetic" ${b.source === "synthetic" ? "selected" : ""}>Synthetic / illustrative</option>`) +
+        field("evidence", "Evidence reference and limits (avoid secrets)", b.evidence, "text", 'maxlength="150"');
     } else if (kind === "consumption") {
       title = "Add daily service consumption";
       intro = "Daily exclusive-GPU allocation summary. An existing row for the same service/date will be explicitly replaced. Keep shared/MIG accounting outside these physical GPU-hour inputs.";
@@ -274,6 +336,9 @@
       if (kind === "service") {
         const s = {...values, id: id || `service-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
         for (const key of ["gpusPerReplica", "rpsPerReplica", "annualGrowth", "monthlyLaunchRps", "headroom"]) s[key] = Number(values[key]);
+        s.drivers = {};
+        for (const key of Object.keys(M.defaultDrivers())) {s.drivers[key] = Number(values[key]); delete s[key];}
+        s.inputTokens = Number(values.inputTokens); s.outputTokens = Number(values.outputTokens);
         const index = next.services.findIndex(s => s.id === id);
         if (index >= 0) {
           if (next.services[index].pool !== s.pool && next.records.some(r => r.serviceId === id)) {
@@ -281,6 +346,12 @@
           }
           next.services[index] = s;
         } else next.services.push(s);
+      } else if (kind === "benchmark") {
+        const b = {...values, id: id || `benchmark-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
+        for (const key of ["gpusPerReplica", "rpsPerReplica", "minInputTokens", "maxInputTokens", "minOutputTokens", "maxOutputTokens"]) b[key] = Number(values[key]);
+        const index = next.benchmarks.findIndex(b => b.id === id);
+        if (index >= 0) next.benchmarks[index] = b;
+        else next.benchmarks.push(b);
       } else if (kind === "consumption") {
         const r = {...values, source: "user-entered"};
         for (const key of ["gpuHours", "activity", "peakRps", "requests"]) r[key] = Number(values[key]);
@@ -340,12 +411,19 @@
     download("gpu-capacity-requirements.csv", csv, "text/csv");
     notice("Requirements CSV exported for the current service and pool filters.");
   }
+  function exportForecasts() {
+    const evidence = chosenServices().map(s => ({serviceId: s.id, serviceName: s.name,
+      evidence: M.forecastEvidence(state, s.id)}));
+    download("gpu-forecast-evidence.json", JSON.stringify({horizon: "One-day-ahead peak RPS", planningStart: state.startMonth, evidence}, null, 2), "application/json");
+    notice("Forecast evidence exported with split scores, predictions and unavailable-data reasons.");
+  }
   document.addEventListener("click", event => {
     const button = event.target.closest("button");
     if (!button) return;
     if (button.dataset.view) {view = button.dataset.view; render();}
     else if (button.dataset.service) {serviceFilter = button.dataset.service; render();}
     else if (button.dataset.editService) openEditor("service", button.dataset.editService);
+    else if (button.dataset.editBenchmark) openEditor("benchmark", button.dataset.editBenchmark);
     else if (button.dataset.editTraining) openEditor("training", button.dataset.editTraining);
     else if (button.dataset.removeTraining) openEditor("remove-training", button.dataset.removeTraining);
     else if (button.hasAttribute("data-remove-addition")) openEditor("remove-addition", button.dataset.removeAddition);
@@ -382,6 +460,8 @@
   });
   $("#main-action").addEventListener("click", () => {
     if (view === "capacity") exportRequirements();
+    else if (view === "forecasts") exportForecasts();
+    else if (view === "benchmarks") openEditor("benchmark");
     else if (view === "data") exportWorkspace();
     else openEditor({overview: "consumption", inference: "service", training: "training"}[view]);
   });
@@ -391,5 +471,5 @@
   $("#close-editor").addEventListener("click", () => $("#editor").close());
   $("#cancel-editor").addEventListener("click", () => $("#editor").close());
   render();
-  if (initialError) notice(initialError, true);
+  if (initialError) notice(initialError, storageBlocked);
 })();

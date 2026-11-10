@@ -142,7 +142,7 @@ test("invalid inputs do not produce success-shaped defaults", () => {
 
 test("input validation rejects impossible dates, supply and malformed workspaces", () => {
   assert.throws(() => M.date("2026-02-30"), /valid/);
-  assert.throws(() => M.validate({version: 2}), /version/);
+  assert.throws(() => M.validate({version: 99}), /version/);
   const s = M.demo(); s.supply.H100.reserve = 80000;
   assert.throws(() => M.validate(s), /reserve/);
 });
@@ -166,4 +166,220 @@ test("serialization round trip preserves computed requirements", () => {
   const s = M.demo();
   const restored = M.validate(JSON.parse(JSON.stringify(s)));
   assert.deepEqual(M.portfolio(restored), M.portfolio(s));
+});
+
+test("v1 migration preserves historical sizing, does not mutate input, and is serializable", () => {
+  const current = M.demo();
+  const expected = M.portfolio(current);
+  const legacy = JSON.parse(JSON.stringify(current));
+  legacy.version = 1;
+  delete legacy.benchmarks;
+  for (const s of legacy.services) {
+    for (const key of ["demandMethod", "drivers", "benchmarkId", "workloadKey", "inputTokens", "outputTokens"]) delete s[key];
+  }
+  const snapshot = JSON.stringify(legacy);
+  const migrated = M.validate(legacy);
+  assert.equal(migrated.version, 2);
+  assert.equal(JSON.stringify(legacy), snapshot);
+  assert.equal(migrated.services[0].demandMethod, "historical");
+  assert.deepEqual(M.portfolio(migrated), expected);
+  assert.deepEqual(M.validate(JSON.parse(JSON.stringify(migrated))), migrated);
+});
+
+test("v1 migration supports maximum-length service IDs without invalid configuration keys", () => {
+  const legacy = M.demo();
+  legacy.version = 1;
+  legacy.services[0].id = "s".repeat(150);
+  legacy.records = [];
+  legacy.training = [];
+  const migrated = M.validate(legacy);
+  assert.equal(migrated.services[0].workloadKey, legacy.services[0].id);
+});
+
+test("malformed v2 input does not silently receive v1 migration defaults", () => {
+  const s = M.demo();
+  delete s.services[0].drivers;
+  assert.throws(() => M.validate(s), /Demand-driver inputs are required/);
+});
+
+test("business drivers compound users, apply cache/agent multipliers, and add launches once", () => {
+  const s = M.demo(), service = s.services[0];
+  service.demandMethod = "drivers";
+  service.annualGrowth = 100;
+  service.monthlyLaunchRps = 10;
+  service.drivers = {activeUsers: 100000, sessionsPerUser: 2, requestsPerSession: 3,
+    callsPerRequest: 4, cacheHitPct: 25, peakToAverage: 5};
+  s.records = [];
+  const e = M.inference(s, service, 5);
+  const organic = 100000 * Math.sqrt(2) * 2 * 3 * 4 * 0.75 / 86400 * 5;
+  assert.equal(e.available, true);
+  assert.equal(e.organicRps, organic);
+  assert.equal(e.launchRps, 60);
+  assert.equal(e.peakRps, organic + 60);
+  assert.equal(e.base, null);
+  assert.equal(M.portfolio(s, service.id)[0].complete, true);
+});
+
+test("100 percent cache avoidance yields no organic backend demand, but launches remain", () => {
+  const s = M.demo(), service = s.services[0];
+  service.demandMethod = "drivers";
+  service.drivers.cacheHitPct = 100;
+  assert.equal(M.inference(s, service, 0).gpus, 0);
+  service.monthlyLaunchRps = 12;
+  assert.equal(M.inference(s, service, 0).peakRps, 12);
+});
+
+test("invalid driver inputs are rejected rather than ignored", () => {
+  const s = M.demo();
+  s.services[0].drivers.cacheHitPct = 101;
+  assert.throws(() => M.validate(s), /Cache/);
+  s.services[0].drivers.cacheHitPct = 0;
+  s.services[0].demandMethod = "magical-ai";
+  assert.throws(() => M.validate(s), /historical/);
+});
+
+test("matching reusable profiles drive sizing instead of unused inline values", () => {
+  const s = M.demo(), service = s.services[0], b = s.benchmarks[0];
+  service.benchmarkId = b.id;
+  service.rpsPerReplica = 99999;
+  const e = M.inference(s, service, 0);
+  assert.equal(e.gpus, Math.ceil(e.peakRps / 0.8 / b.rpsPerReplica) * b.gpusPerReplica);
+  assert.equal(e.performance.source, "synthetic");
+  const restored = M.validate(JSON.parse(JSON.stringify(s)));
+  assert.deepEqual(M.inference(restored, restored.services[0], 0), e);
+});
+
+test("editing a shared profile recalculates all linked services", () => {
+  const s = M.demo(), b = s.benchmarks[0];
+  const linked = [s.services[0], s.services[4]];
+  for (const service of linked) {
+    service.benchmarkId = b.id;
+    service.workloadKey = b.workloadKey;
+  }
+  M.validate(s);
+  const before = linked.map(service => M.inference(s, service, 0).gpus);
+  b.rpsPerReplica /= 2;
+  for (const [i, service] of linked.entries()) {
+    const e = M.inference(s, service, 0);
+    assert.ok(e.gpus > before[i]);
+    assert.equal(e.gpus, Math.ceil(e.peakRps / (1 - service.headroom / 100) / b.rpsPerReplica) * b.gpusPerReplica);
+  }
+});
+
+test("profile mismatch and out-of-range token mix mark portfolio partial without fallback", () => {
+  const s = M.demo(), service = s.services[0];
+  service.benchmarkId = s.benchmarks[0].id;
+  service.inputTokens = s.benchmarks[0].maxInputTokens + 1;
+  assert.match(M.inference(s, service, 0).reason, /validity range/);
+  assert.equal(M.inference(s, service, 0).gpus, null);
+  assert.equal(M.portfolio(s)[0].complete, false);
+  service.inputTokens = 1024;
+  service.workloadKey = "other-model-or-slo";
+  assert.match(M.inference(s, service, 0).reason, /configuration/);
+  service.workloadKey = s.benchmarks[0].workloadKey;
+  s.benchmarks[0].pool = "B200";
+  assert.match(M.inference(s, service, 0).reason, /pool/);
+});
+
+test("future-dated performance evidence is not used in earlier plans", () => {
+  const s = M.demo(), service = s.services[0];
+  service.benchmarkId = s.benchmarks[0].id;
+  s.benchmarks[0].measuredOn = `${s.startMonth}-01`;
+  assert.match(M.inference(s, service, 0).reason, /dated/);
+});
+
+test("missing profile references and inverted validity bounds fail validation", () => {
+  const s = M.demo();
+  s.services[0].benchmarkId = "does-not-exist";
+  assert.throws(() => M.validate(s), /unknown performance/);
+  s.services[0].benchmarkId = "";
+  s.benchmarks[0].minInputTokens = 9999;
+  assert.throws(() => M.validate(s), /Maximum input/);
+});
+
+function forecastState(count = 70) {
+  const s = M.demo();
+  s.records = Array.from({length: count}, (_, i) => ({
+    serviceId: s.services[0].id,
+    date: new Date(Date.UTC(2026, 7, 1 + i)).toISOString().slice(0, 10),
+    peakRps: 10 * (i % 7 + 1), requests: 0, gpuHours: 24, activity: 50, source: "user-entered"
+  }));
+  return s;
+}
+
+test("seasonal backtest selects on validation and scores a separate later holdout", () => {
+  const s = forecastState();
+  const e = M.forecastEvidence(s, s.services[0].id);
+  assert.equal(e.available, true);
+  assert.equal(e.evaluationDays, 42);
+  assert.equal(e.selected, "seasonal_7d");
+  const model = e.scored.find(r => r.method === e.selected);
+  assert.equal(model.validation.mae, 0);
+  assert.equal(model.heldOut.mae, 0);
+  assert.equal(model.validation.days, 28);
+  assert.equal(model.heldOut.days, 14);
+  assert.equal(e.source, "user-entered/mixed");
+  assert.match(e.horizon, /not a six-month/);
+  assert.ok(e.predictions.every(p => p.split === "held_out"));
+});
+
+test("predictors do not read target or future observations", () => {
+  const s = forecastState();
+  const history = new Map(s.records.map(r => [r.date, r.peakRps]));
+  const target = s.records[40].date;
+  const predictions = M.FORECAST_MODELS.map(m => M.predictPeak(history, target, m));
+  for (const [d] of history) if (d >= target) history.set(d, 1e9);
+  assert.deepEqual(M.FORECAST_MODELS.map(m => M.predictPeak(history, target, m)), predictions);
+});
+
+test("held-out actuals cannot influence method selection", () => {
+  const s = forecastState();
+  const original = M.forecastEvidence(s, s.services[0].id);
+  const firstHeldOut = original.predictions[0].date;
+  for (const row of s.records) if (row.date >= firstHeldOut) row.peakRps = 1000000;
+  const changed = M.forecastEvidence(s, s.services[0].id);
+  assert.equal(changed.selected, original.selected);
+  assert.deepEqual(changed.scored.map(r => r.validation), original.scored.map(r => r.validation));
+  assert.ok(changed.scored.some(r => r.heldOut.mae > 0));
+});
+
+test("post-plan records do not affect backtests", () => {
+  const s = forecastState(), id = s.services[0].id;
+  const before = M.forecastEvidence(s, id);
+  s.records.push({...s.records[0], date: "2027-01-01", peakRps: 1e8});
+  assert.deepEqual(M.forecastEvidence(s, id), before);
+});
+
+test("insufficient or missing daily history has an explicit unavailable result", () => {
+  const s = forecastState(41);
+  assert.equal(M.forecastEvidence(s, s.services[0].id).available, false);
+  const complete = forecastState();
+  complete.records.splice(-2, 1);
+  const e = M.forecastEvidence(complete, complete.services[0].id);
+  assert.equal(e.available, true);
+  assert.equal(e.nextPeakRps, null);
+  const history = new Map(complete.records.map(r => [r.date, r.peakRps]));
+  assert.equal(M.predictPeak(history, e.nextDate, "rolling_28d"), null);
+});
+
+test("zero actual peaks yield undefined WAPE, not a division-by-zero score", () => {
+  const s = forecastState();
+  for (const r of s.records) r.peakRps = 0;
+  const e = M.forecastEvidence(s, s.services[0].id);
+  assert.equal(e.scored[0].heldOut.wape, null);
+  assert.equal(e.scored[0].heldOut.mae, 0);
+});
+
+test("forecast errors use RPS units and WAPE is a ratio, not an already-scaled percentage", () => {
+  const s = forecastState();
+  const e = M.forecastEvidence(s, s.services[0].id);
+  const r = e.scored.find(r => r.method === "last_day");
+  const heldOut = r.predictions.filter(p => p.split === "held_out");
+  const absolute = heldOut.reduce((n, p) => n + Math.abs(p.predicted - p.actual), 0);
+  const signed = heldOut.reduce((n, p) => n + p.predicted - p.actual, 0);
+  const actual = heldOut.reduce((n, p) => n + p.actual, 0);
+  assert.equal(r.heldOut.mae, absolute / heldOut.length);
+  assert.equal(r.heldOut.bias, signed / heldOut.length);
+  assert.equal(r.heldOut.wape, absolute / actual);
+  assert.ok(r.heldOut.mae > 0);
 });
