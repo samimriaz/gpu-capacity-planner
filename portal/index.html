@@ -3,22 +3,22 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GPU Atlas | Capacity Planning Portal</title>
+  <title>GPU Atlas | GPU Capacity Forecasting</title>
   <link rel="stylesheet" href="styles.css">
   <script defer src="model.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="#overview"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
+    <a class="brand" href="#capacity"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
     <div class="workspace-label">PLANNING WORKSPACE</div>
     <nav aria-label="Main navigation">
-      <button data-view="overview" class="active"><span>01</span> Consumption</button>
-      <button data-view="inference"><span>02</span> Inference growth</button>
-      <button data-view="benchmarks"><span>03</span> Performance profiles</button>
-      <button data-view="forecasts"><span>04</span> Forecast evidence</button>
+      <button data-view="capacity" class="active"><span>01</span> Capacity forecast</button>
+      <button data-view="overview"><span>02</span> Consumption</button>
+      <button data-view="inference"><span>03</span> Service plans</button>
+      <button data-view="benchmarks"><span>04</span> Performance profiles</button>
       <button data-view="training"><span>05</span> Training roadmap</button>
-      <button data-view="capacity"><span>06</span> Capacity requirements</button>
+      <button data-view="forecasts"><span>06</span> Daily backtests</button>
       <button data-view="data"><span>07</span> Data & assumptions</button>
     </nav>
     <div class="sidebar-bottom"><span class="dot"></span> Local planning workspace<p>Synthetic fleet. Real calculations.<br>No infrastructure actions.</p><span id="save-state">Browser-local storage</span></div>
@@ -30,8 +30,8 @@
     </header>
     <div id="notice" role="status" hidden></div>
     <section class="page-heading">
-      <div><p class="eyebrow">MEASURE. UNDERSTAND. PLAN.</p><h1 id="page-title">Organization consumption</h1><p id="page-subtitle"></p></div>
-      <button class="button primary" id="main-action">+ Add consumption</button>
+      <div><p class="eyebrow">FORECAST. ADJUST. PLAN.</p><h1 id="page-title">Capacity forecast</h1><p id="page-subtitle"></p></div>
+      <button class="button primary" id="main-action">Export forecast</button>
     </section>
     <section class="filterbar" aria-label="Workspace filters">
       <label>Service<select id="service-filter"><option value="all">All services</option></select></label>

@@ -1,4 +1,4 @@
-# GPU Atlas: GPU capacity planning
+# GPU Atlas: GPU capacity forecasting
 
 ## What is the goal?
 
@@ -7,15 +7,19 @@ Help infrastructure teams answer one question:
 **How many GPUs will the company need over the next six months, and where will
 we run short?**
 
-The portal should help them understand:
+The tool learns from each service's traffic history and forecasts GPU demand.
+Users can then adjust that forecast for launches, serving improvements, training
+plans, and new capacity.
+
+It helps them understand:
 
 - Which services and teams use GPUs today.
 - How usage and customer traffic are growing.
 - What new models teams plan to train.
 - Whether available GPUs can cover those needs.
 
-Teams enter their plans and assumptions. Planners see the combined GPU requirement,
-identify shortages, and compare changes before committing to a plan.
+The main screen separates **the base forecast** from **the forecast with your
+plans**. You can see what changed and when each GPU type runs short.
 
 The portal runs in your browser and includes a sample 200,000-GPU inventory
 and service history.
@@ -29,14 +33,15 @@ and service history.
 
 ## How would it work?
 
-First, collect current usage and inventory. Then ask teams what will change.
-Use both to estimate future demand and compare it with supply.
+Collect service history, learn its traffic trend, and predict future demand.
+Then layer team plans onto the prediction and compare it with supply.
 
 ```mermaid
 flowchart TD
     Usage["GPU usage and service traffic"] --> History["Show current usage and growth"]
-    History --> Serving["Estimate GPUs needed to serve users"]
-    Growth["Teams enter growth and launch plans"] --> Serving
+    History --> Forecast["Learn traffic trend and weekday pattern"]
+    Forecast --> Serving["Convert predicted traffic into GPUs"]
+    Growth["Users adjust traffic, launches and serving performance"] --> Serving
     Tests["Performance tests: requests each GPU group can handle"] --> Serving
     Plans["Teams enter model training plans"] --> Training["Estimate GPUs needed for training"]
     Serving --> Total["Add requirements by month and GPU type"]
@@ -108,18 +113,20 @@ live updates and historical ownership tracking are not.
 The data tells us what happened. Teams still need to tell us what they intend
 to do next.
 
-1. **Review consumption.** Filter by service, team, or GPU type. Look at daily
-   or weekly usage and check whether there is enough history to compare growth.
-2. **Plan serving demand.** In **Inference growth**, enter expected traffic
-   growth and launches. For a new service, enter expected users and usage instead.
-3. **Choose serving performance.** Enter how many requests a group of GPUs can
-   handle, or select a suitable test result from **Performance profiles**.
-4. **Submit training plans.** In **Training roadmap**, enter model size, training
+1. **Open Capacity forecast.** It starts with a six-month prediction learned
+   from service history. Filter by service, team, or GPU type.
+2. **Adjust the prediction.** Enter traffic above or below the forecast, or a
+   change in serving throughput. Click **Update forecast** to save and compare.
+   The base forecast stays unchanged.
+3. **Set service plans.** Add launch traffic and serving test results. A new
+   service without enough history can use an explicit plan based on users.
+4. **Add training plans.** In **Training roadmap**, enter model size, training
    data size, timing, hardware assumptions, and the number of simultaneous runs.
 5. **Update supply.** In **Data & assumptions**, enter inventory, unavailable
    GPUs, reserves, and additions.
-6. **Review the result.** In **Capacity requirements**, inspect monthly shortages
-   by GPU type. Change inputs to compare alternatives, then export the plan.
+6. **Review shortages.** Back in **Capacity forecast**, compare the base forecast,
+   your plan, and supply. Turn launches or training on/off to see their effect.
+   Export the forecast as JSON or the monthly numbers as CSV.
 
 For example, a planner could move a training plan from March to April or add
 GPUs starting in February and see the effect. The portal recalculates the result;
@@ -151,21 +158,46 @@ they do not automatically set the future growth rate.
 Using a trained model to answer requests is called **inference**.
 The portal first estimates traffic, then converts that traffic into GPUs.
 
-**Choose one way to estimate traffic:**
+**For an existing service, learn from its history:**
 
-- **Use existing traffic.** Find the latest observation before planning starts,
-  look back 28 calendar days, and use the highest recorded daily peak request rate.
-  Apply the annual growth rate entered by the team, compounded monthly.
-  Missing days and old observations remain visible; no missing traffic is invented.
-- **Start from expected users.** Multiply daily users by sessions per user,
-  requests per session, and model calls per request. Remove calls avoided entirely
-  by cache. Divide by 86,400 to get average requests per second, then multiply by
-  the team's peak-to-average traffic factor. In this mode, annual growth applies
-  to users.
+1. Take up to 84 consecutive daily records before planning starts. At least
+   42 are needed; missing days are not filled with zero.
+2. Try two methods: a recent average and a straight-line trend fitted to weekly
+   averages. Both also learn which weekdays tend to be busier.
+3. Keep the final 14 days aside. Predict those days using only the earlier data
+   and choose the method with the smaller average error. These are multi-day
+   predictions, not predictions updated with each day's actual result.
+4. Fit the selected method again with all the recent history. Predict daily
+   peaks through the next six planning months, including any gap between the
+   latest observation and the start of the plan.
+5. Use the busiest predicted day in each month to size serving capacity.
 
-After either method, add the extra peak traffic entered for launches.
-The monthly launch increment accumulates across the six months. Do not count
-the same launch in both the growth rate and the launch input.
+The method, days of history, last observation, and selection error appear under
+**What is driving the forecast?** The 14-day error helps choose a method; it does
+not measure accuracy six months ahead.
+
+**Then apply your adjustments:**
+
+- **Traffic +20%:** increase predicted traffic by 20%.
+- **Throughput +20%:** each serving group handles 20% more requests, reducing
+  the number of groups needed.
+- **Include launches:** add the launch traffic entered for each service. Monthly
+  increments accumulate once; they are not also multiplied by the traffic adjustment.
+- **Include training:** add the training roadmap to the serving requirement.
+
+Adjustments apply across the workspace and are saved with it.
+The base serving line excludes these changes and training. It still includes
+each service's existing spare-capacity allowance.
+
+**For a new service without history:** select a user-based plan in **Service
+plans**. Multiply daily users by sessions, requests, and model calls; subtract
+calls avoided entirely by cache; convert to requests per second and apply the
+peak-traffic factor. Annual growth applies to users in this mode.
+This is labeled as an entered plan, not a learned traffic trend.
+
+The **Service plans** page retains the earlier manual annual-growth calculator
+for comparison. Its annual traffic growth input does not drive the learned
+forecast.
 
 **Then convert peak traffic into GPUs:**
 
@@ -180,11 +212,8 @@ GPUs needed = GPU groups needed * GPUs per group
 A group is one copy of the serving model, which may need several GPUs.
 For 20% spare serving capacity, use 0.8 as the usable share.
 
-**Example:** a service starts at 100,000 requests per second. The team expects
-44% annual growth and adds 1,000 requests per second of launch traffic each month.
-After six months, the estimated peak is 126,000 requests per second.
-
-If an eight-GPU group handles 40 requests per second, with 20% capacity kept
+**Example:** suppose the traffic forecast predicts a peak of 126,000 requests
+per second. If an eight-GPU group handles 40 requests per second, with 20% capacity kept
 spare, the service needs **3,938 groups, or 31,504 GPUs**.
 These are illustrative inputs, not measured hardware performance.
 
@@ -246,13 +275,13 @@ exist, not that every assumption or physical placement has been verified.
 
 ### E. Check short-term traffic predictions
 
-The **Forecast evidence** page asks a smaller question: *could a simple method
+The **Daily backtests** page asks a smaller question: *could a simple method
 have predicted the next day's peak traffic?*
 
 It compares:
 
 - Yesterday's peak.
-- The average of the same weekday over the previous four weeks.
+- The peak on the same weekday last week.
 - The average peak over the previous 28 days.
 
 Each prediction uses only earlier observations. All three methods need the same
@@ -262,13 +291,17 @@ on days that were not used to choose it. Each part has at least seven days.
 
 The page reports average error, percentage error, and whether predictions tend
 to be too high or too low. You can export the scores and daily predictions.
-This tests next-day traffic prediction, **not the accuracy of the six-month
-capacity plan**. The six-month growth assumptions still come from users.
+These are separate one-day checks. The main capacity forecast uses the multi-day
+model comparison described above.
 
 ## Screenshots
 
-These are captures of the original prototype using made-up data. The current
-version also includes Performance profiles and Forecast evidence.
+**Capacity forecast:** historical usage, a learned forecast, and a plan with
+25% extra traffic. The controls let users compare changes directly.
+
+![History-based GPU forecast with editable scenario controls](docs/screenshots/capacity-forecast.png)
+
+The remaining captures show supporting pages from the earlier version.
 
 **Consumption:** see which services use GPUs and how usage changes.
 
@@ -289,10 +322,6 @@ version also includes Performance profiles and Forecast evidence.
 
 </details>
 
-**Capacity requirements:** compare demand with supply by month and GPU type.
-
-![Monthly GPU requirements and shortages](docs/screenshots/capacity-requirements.png)
-
 <details>
 <summary>Show inventory and workspace controls</summary>
 
@@ -312,7 +341,7 @@ There is no server, build step, or package installation.
 Edits save in the browser's local storage. Export workspace JSON to keep a copy
 or move it to another browser. Import replaces the workspace after validation
 and confirmation. Older version-1 workspaces are upgraded without changing their
-existing historical-demand calculations.
+existing saved inputs. Forecast adjustments are included in workspace exports.
 
 The sample history ends November 9, 2026. The default plan covers December 2026
 through May 2027. You can enter a different planning start month.
@@ -320,12 +349,13 @@ through May 2027. You can enter a different planning start month.
 Run the JavaScript calculation tests with Node.js:
 
 ```powershell
-node --test .\tests\portal-model.test.cjs
+node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs
 ```
 
 The calculations are in [portal/model.js](portal/model.js), the UI is in
 [portal/app.js](portal/app.js), and tests are in
-[tests/portal-model.test.cjs](tests/portal-model.test.cjs).
+[tests/portal-model.test.cjs](tests/portal-model.test.cjs) and
+[tests/forecast-model.test.cjs](tests/forecast-model.test.cjs).
 
 ## What it does not do yet
 
@@ -340,7 +370,9 @@ The calculations are in [portal/model.js](portal/model.js), the UI is in
   GPU placement, complete memory fit, or detailed hardware compatibility.
 - **No universal model calculator:** training support does not yet cover
   mixture-of-experts models, fine-tuning, or detailed long-context costs.
-- **No guaranteed forecast:** plans depend on entered assumptions. Failures,
+- **No annual seasonal model:** the learned forecast uses recent history and
+  weekday patterns, not annual holidays or business cycles.
+- **No guaranteed forecast:** past trends and plans can change. Failures,
   changing efficiency, delayed deliveries, and correlated demand can change the
   outcome. There are no calibrated confidence ranges for the six-month plan.
 

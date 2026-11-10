@@ -29,6 +29,16 @@
     return {activeUsers: 10000000, sessionsPerUser: 2, requestsPerSession: 5,
       callsPerRequest: 1, cacheHitPct: 0, peakToAverage: 3};
   }
+  function defaultForecast() {
+    return {trafficAdjustmentPct: 0, throughputChangePct: 0, includeLaunches: true, includeTraining: true};
+  }
+  function forecastCheck(options) {
+    number(options.trafficAdjustmentPct, "Forecast traffic adjustment %", -90, 300);
+    number(options.throughputChangePct, "Serving throughput change %", -50, 300);
+    for (const key of ["includeLaunches", "includeTraining"]) {
+      if (typeof options[key] !== "boolean") fail("Forecast plan switches must be true or false.");
+    }
+  }
   function upgrade(state) {
     if (!state || state.version !== 1) return state;
     if (!Array.isArray(state.services)) fail("Legacy workspace requires services.");
@@ -102,6 +112,7 @@
     state = upgrade(state);
     if (!state || state.version !== 2) fail("Unsupported workspace version.");
     month(state.startMonth);
+    if (state.forecast !== undefined) forecastCheck(state.forecast);
     if (!Array.isArray(state.services) || !state.services.length || state.services.length > 1000) fail("Workspace requires 1–1,000 services.");
     if (!Array.isArray(state.records) || state.records.length > 100000) fail("At most 100,000 consumption rows are supported.");
     if (!Array.isArray(state.training) || state.training.length > 1000) fail("At most 1,000 training plans are supported.");
@@ -249,6 +260,130 @@
       horizon: "One-day-ahead daily peak RPS; not a six-month capacity forecast.",
       predictions: best.predictions.filter(p => p.split === "held_out")};
   }
+  function fitTraffic(rows, method) {
+    const count = Math.floor(Math.min(rows.length, method === "recent_average" ? 28 : 84) / 7) * 7;
+    const sample = rows.slice(-count);
+    const weeks = Array.from({length: count / 7}, (_, i) => ({
+      x: i * 7 + 3, y: sample.slice(i * 7, i * 7 + 7).reduce((n, r) => n + r.peakRps, 0) / 7
+    }));
+    const meanX = weeks.reduce((n, w) => n + w.x, 0) / weeks.length;
+    const meanY = weeks.reduce((n, w) => n + w.y, 0) / weeks.length;
+    const slope = method === "linear_trend" ? weeks.reduce((n, w) => n + (w.x - meanX) * (w.y - meanY), 0) /
+      weeks.reduce((n, w) => n + (w.x - meanX) ** 2, 0) : 0;
+    const intercept = meanY - slope * meanX;
+    const weekday = Array.from({length: 7}, (_, day) => {
+      const residuals = sample.map((r, i) => ({day: new Date(r.date).getUTCDay(), residual: r.peakRps - intercept - slope * i}))
+        .filter(r => r.day === day);
+      return residuals.reduce((n, r) => n + r.residual, 0) / residuals.length;
+    });
+    return {level: intercept + slope * (count - 1), slope, weekday, end: sample.at(-1).date};
+  }
+  function projectTraffic(fit, target) {
+    return Math.max(0, fit.level + fit.slope * ((Date.parse(target) - Date.parse(fit.end)) / DAY) +
+      fit.weekday[new Date(target).getUTCDay()]);
+  }
+  function trafficForecast(state, serviceId) {
+    const eligible = state.records.filter(r => r.serviceId === serviceId && r.date < `${state.startMonth}-01`)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (!eligible.length) return {available: false, reason: "Add at least 42 consecutive daily observations to learn this service's traffic."};
+    const history = new Map(eligible.map(r => [r.date, r]));
+    const lastDate = eligible.at(-1).date;
+    const rows = [];
+    for (let offset = 0; offset < 84; offset++) {
+      const key = new Date(Date.parse(lastDate) - offset * DAY).toISOString().slice(0, 10);
+      if (!history.has(key)) break;
+      rows.unshift(history.get(key));
+    }
+    if (rows.length < 42) return {available: false, observedDays: rows.length, lastDate,
+      reason: `Only ${rows.length} consecutive recent days. Need 42; missing days are not filled with zero.`};
+    const train = rows.slice(0, -14), holdout = rows.slice(-14);
+    const scores = ["recent_average", "linear_trend"].map(method => {
+      const fit = fitTraffic(train, method);
+      const predictions = holdout.map(r => ({date: r.date, actual: r.peakRps, predicted: projectTraffic(fit, r.date)}));
+      const absolute = predictions.reduce((n, p) => n + Math.abs(p.predicted - p.actual), 0);
+      const total = predictions.reduce((n, p) => n + p.actual, 0);
+      return {method, mae: absolute / 14, wape: total ? absolute / total : null, predictions};
+    });
+    const best = [...scores].sort((a, b) => a.mae - b.mae)[0];
+    const fit = fitTraffic(rows, best.method);
+    const monthly = months(state.startMonth).map(m => {
+      const next = months(m, 2)[1];
+      const daily = [];
+      for (let stamp = Date.parse(`${m}-01`); stamp < Date.parse(`${next}-01`); stamp += DAY) {
+        const target = new Date(stamp).toISOString().slice(0, 10);
+        daily.push({date: target, peakRps: projectTraffic(fit, target)});
+      }
+      return {month: m, peakRps: Math.max(...daily.map(p => p.peakRps)), daily};
+    });
+    return {available: true, source: "history", method: best.method, fit, scores, monthly,
+      observedDays: rows.length, firstDate: rows[0].date, lastDate,
+      gapDays: Math.round((Date.parse(`${state.startMonth}-01`) - Date.parse(lastDate)) / DAY) - 1,
+      selectionDays: 14, selectedWape: best.wape};
+  }
+  function capacityForecast(state, selectedId = "all", selectedTeam = "all", selectedPool = "all") {
+    const options = state.forecast || defaultForecast();
+    forecastCheck(options);
+    if (selectedPool !== "all") pool(selectedPool);
+    const services = state.services.filter(s => (selectedId === "all" || s.id === selectedId) &&
+      (selectedTeam === "all" || s.team === selectedTeam) && (selectedPool === "all" || s.pool === selectedPool));
+    const evidence = services.map(service => {
+      const history = trafficForecast(state, service.id);
+      const demand = service.demandMethod === "drivers" ? {available: true, source: "drivers", method: "drivers",
+        monthly: months(state.startMonth).map((m, i) => ({month: m, peakRps: inference(state, service, i).organicRps}))} : history;
+      const performance = profileFor(state, service);
+      return {service, history, demand, performance, available: demand.available && performance.available,
+        reason: !demand.available ? demand.reason : !performance.available ? performance.reason : ""};
+    });
+    const monthly = months(state.startMonth).map((m, index) => {
+      const pools = POOLS.filter(p => selectedPool === "all" || p === selectedPool).map(p => {
+        const entries = evidence.filter(e => e.service.pool === p);
+        const estimates = entries.filter(e => e.available).map(e => {
+          const baseRps = e.demand.monthly[index].peakRps;
+          const launchRps = options.includeLaunches ? e.service.monthlyLaunchRps * (index + 1) : 0;
+          const peakRps = baseRps * (1 + options.trafficAdjustmentPct / 100) + launchRps;
+          const usableShare = 1 - e.service.headroom / 100;
+          const baselineGpus = Math.ceil(baseRps / usableShare / e.performance.rpsPerReplica) * e.performance.gpusPerReplica;
+          const gpus = Math.ceil(peakRps / usableShare / (e.performance.rpsPerReplica *
+            (1 + options.throughputChangePct / 100))) * e.performance.gpusPerReplica;
+          const available = Number.isSafeInteger(baselineGpus) && Number.isSafeInteger(gpus);
+          return {serviceId: e.service.id, baseRps, launchRps, peakRps, baselineGpus, gpus, available,
+            reason: available ? "" : "GPU estimate exceeds the supported count range. Check traffic and serving throughput."};
+        });
+        const missing = entries.filter(e => !e.available).length + estimates.filter(e => !e.available).length;
+        const inferenceGpus = estimates.filter(e => e.available).reduce((n, e) => n + e.gpus, 0);
+        const baselineInference = estimates.filter(e => e.available).reduce((n, e) => n + e.baselineGpus, 0);
+        const trainingGpus = options.includeTraining ? state.training.filter(t => t.month === m && t.pool === p &&
+          services.some(s => s.id === t.serviceId)).reduce((n, t) => n + training(t).totalGpus, 0) : 0;
+        const supply = state.supply[p];
+        const usable = supply.installed - supply.unavailable - supply.reserve +
+          state.supply.additions.filter(a => a.pool === p && a.month <= m).reduce((n, a) => n + a.gpus, 0);
+        const required = inferenceGpus + trainingGpus;
+        return {month: m, pool: p, baselineInference, inference: inferenceGpus, training: trainingGpus, required,
+          usable, gap: required - usable, missing, complete: missing === 0, estimates};
+      });
+      return {month: m, pools, baselineRequired: pools.reduce((n, p) => n + p.baselineInference, 0),
+        required: pools.reduce((n, p) => n + p.required, 0), usable: pools.reduce((n, p) => n + p.usable, 0),
+        complete: pools.every(p => p.complete)};
+    });
+    for (const entry of evidence) {
+      const invalid = monthly.flatMap(m => m.pools).flatMap(p => p.estimates)
+        .find(e => e.serviceId === entry.service.id && !e.available);
+      if (invalid) {entry.available = false; entry.reason = invalid.reason;}
+    }
+    const records = state.records.filter(r => services.some(s => s.id === r.serviceId) && r.date < `${state.startMonth}-01`);
+    const byDate = new Map();
+    for (const r of records) {
+      if (!byDate.has(r.date)) byDate.set(r.date, []);
+      byDate.get(r.date).push(r);
+    }
+    const historical = [...new Set(records.map(r => r.date.slice(0, 7)))].sort().slice(-3).map(m => {
+      const days = [...byDate.entries()].filter(([d]) => d.startsWith(m));
+      const complete = days.every(([, rows]) => rows.length === services.length);
+      return {month: m, actual: complete ? Math.max(...days.map(([, rows]) =>
+        rows.reduce((n, r) => n + r.gpuHours / 24, 0))) : null, observedDays: days.length};
+    });
+    return {options, services: evidence, monthly, historical};
+  }
   function training(plan) {
     const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
     const effectiveFlops = plan.peakTflops * 1e12 * plan.mfu / 100;
@@ -356,8 +491,9 @@
       },
     });
   }
-  const api = {POOLS, validate, upgrade, defaultDrivers, number, date, months, growth, trend, baseline,
-    inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, training, portfolio, comparePeriods, demo};
+  const api = {POOLS, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
+    inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
+    training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
