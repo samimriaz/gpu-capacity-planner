@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPU Atlas | Capacity Planning Portal</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="model.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
+    <div class="workspace-label">PLANNING WORKSPACE</div>
+    <nav aria-label="Main navigation">
+      <button data-view="overview" class="active"><span>01</span> Consumption</button>
+      <button data-view="inference"><span>02</span> Inference growth</button>
+      <button data-view="training"><span>03</span> Training roadmap</button>
+      <button data-view="capacity"><span>04</span> Capacity requirements</button>
+      <button data-view="data"><span>05</span> Data & assumptions</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="dot"></span> Local planning workspace<p>Synthetic fleet. Real calculations.<br>No infrastructure actions.</p><span id="save-state">Browser-local storage</span></div>
+  </aside>
+  <main>
+    <header>
+      <div class="breadcrumb">Infrastructure <span>/</span> Capacity intelligence</div>
+      <div class="header-actions"><span class="pill">PROTOTYPE · SYNTHETIC DATA</span><button class="button subtle" id="export">Export workspace</button></div>
+    </header>
+    <div id="notice" role="status" hidden></div>
+    <section class="page-heading">
+      <div><p class="eyebrow">MEASURE. UNDERSTAND. PLAN.</p><h1 id="page-title">Organization consumption</h1><p id="page-subtitle"></p></div>
+      <button class="button primary" id="main-action">+ Add consumption</button>
+    </section>
+    <section class="filterbar" aria-label="Workspace filters">
+      <label>Service<select id="service-filter"><option value="all">All services</option></select></label>
+      <label>Team<select id="team-filter"><option value="all">All teams</option></select></label>
+      <label>GPU pool<select id="pool-filter"><option value="all">All GPU pools</option><option>H100</option><option>H200</option><option>B200</option></select></label>
+      <label>Planning starts<input type="month" id="start-month" required></label>
+      <span class="filter-note">Six-month planning horizon <span class="dot"></span></span>
+    </section>
+    <div id="content"></div>
+    <footer>GPU Atlas / Local prototype <span>Estimates are not reservations or placement guarantees.</span></footer>
+  </main>
+  <dialog id="editor" aria-labelledby="editor-title">
+    <form id="editor-form">
+      <div class="dialog-heading"><div><p class="eyebrow">WORKSPACE INPUT</p><h2 id="editor-title"></h2></div><button type="button" class="icon-button" id="close-editor" aria-label="Close dialog">×</button></div>
+      <p id="editor-intro"></p><div id="editor-fields" class="form-grid"></div>
+      <p id="form-error" class="error" role="alert"></p>
+      <div class="dialog-footer"><button type="button" class="button subtle" id="cancel-editor">Cancel</button><button type="submit" class="button primary">Save & recalculate</button></div>
+    </form>
+  </dialog>
+</body>
+</html>
