@@ -114,7 +114,7 @@ test("forecast adjustments change planned demand but not the learned base", () =
   for (const [i, month] of raised.monthly.entries()) {
     assert.equal(month.baselineRequired, base.monthly[i].baselineRequired);
     assert.ok(month.required > base.monthly[i].required);
-    const row = month.pools.find(p => p.pool === "H200").estimates[0];
+    const row = month.pools.find(p => p.pool === "H200-SXM-141GB").estimates[0];
     assert.equal(row.peakRps, row.baseRps * 1.2);
   }
   state.forecast.throughputChangePct = 50;
@@ -125,29 +125,29 @@ test("launches are added once, after traffic adjustment, and can be excluded", (
   const state = fixture();
   state.services[0].monthlyLaunchRps = 100;
   state.forecast = {...M.defaultForecast(), trafficAdjustmentPct: 20};
-  const row = M.capacityForecast(state).monthly[5].pools.find(p => p.pool === "H200").estimates[0];
+  const row = M.capacityForecast(state).monthly[5].pools.find(p => p.pool === "H200-SXM-141GB").estimates[0];
   assert.equal(row.launchRps, 600);
   assert.equal(row.peakRps, row.baseRps * 1.2 + 600);
   state.forecast.includeLaunches = false;
-  const excluded = M.capacityForecast(state).monthly[5].pools.find(p => p.pool === "H200").estimates[0];
+  const excluded = M.capacityForecast(state).monthly[5].pools.find(p => p.pool === "H200-SXM-141GB").estimates[0];
   assert.equal(excluded.launchRps, 0);
 });
 
 test("training toggles, supply additions and filters all affect the same forecast", () => {
   const state = M.demo();
   const full = M.capacityForecast(state);
-  const jan = full.monthly[1].pools.find(p => p.pool === "H200");
-  const feb = full.monthly[2].pools.find(p => p.pool === "H200");
+  const jan = full.monthly[1].pools.find(p => p.pool === "H200-SXM-141GB");
+  const feb = full.monthly[2].pools.find(p => p.pool === "H200-SXM-141GB");
   assert.equal(jan.training, M.training(state.training[0]).totalGpus);
   assert.equal(feb.usable - jan.usable, 8192);
-  const filtered = M.capacityForecast(state, "assistant", "all", "H200");
+  const filtered = M.capacityForecast(state, "assistant", "all", "H200-SXM-141GB");
   assert.equal(filtered.services.length, 1);
   assert.equal(filtered.monthly[1].pools.length, 1);
   assert.equal(filtered.monthly[1].usable, jan.usable);
   assert.equal(filtered.monthly[1].pools[0].training, jan.training);
   state.forecast = {...M.defaultForecast(), includeTraining: false};
   const without = M.capacityForecast(state);
-  assert.equal(without.monthly[1].pools.find(p => p.pool === "H200").training, 0);
+  assert.equal(without.monthly[1].pools.find(p => p.pool === "H200-SXM-141GB").training, 0);
   assert.equal(full.monthly[1].required - without.monthly[1].required, jan.training);
 });
 

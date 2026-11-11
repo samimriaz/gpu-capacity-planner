@@ -24,12 +24,80 @@ plans**. You can see what changed and when each GPU type runs short.
 The portal runs in your browser and includes a sample 200,000-GPU inventory
 and service history.
 
+[GPU SKUs](#does-it-account-for-the-gpu-sku) |
+[NVIDIA workloads](#which-nvidia-workloads-are-in-the-example) |
 [Data inputs](#where-would-the-data-come-from) |
 [Planning logic](#how-the-planning-logic-works) |
 [Using the portal](#what-does-the-user-do) |
 [Screenshots](#screenshots) |
 [Run locally](#run-the-portal) |
 [Limitations](#what-it-does-not-do-yet)
+
+## Does it account for the GPU SKU?
+
+Yes. The tool tracks the **GPU variant, memory, and form factor**, not just the
+family name. The example inventory includes:
+
+| SKU | Memory per GPU | Form factor |
+|---|---|---|
+| H100 SXM | 80 GB HBM3 | SXM |
+| H100 PCIe | 80 GB HBM2e | PCIe |
+| H200 SXM | 141 GB HBM3e | SXM |
+| B200, DGX B200 configuration | 180 GB HBM3e | SXM |
+| RTX PRO 6000 Blackwell Server Edition | 96 GB GDDR7 | PCIe |
+
+Counts are individual GPUs, not servers or racks. NVIDIA specification links
+are available in **Data & assumptions**. The B200 memory entry refers to the
+[DGX B200 configuration](https://docs.nvidia.com/dgx/dgxb200-user-guide/introduction-to-dgxb200.html),
+which lists eight GPUs and 1,440 GB of total GPU memory.
+
+Each service, serving test, training plan, inventory count, and planned addition
+uses a SKU. Filters and exports use those same identifiers.
+
+- A serving profile for H100 SXM cannot size an H100 PCIe service.
+- Spare H100 PCIe GPUs do not automatically cover an H100 SXM shortage.
+- Training memory cannot exceed the selected SKU's capacity. Changing the SKU
+  fills its memory capacity and clears the old peak-throughput input, so the
+  user must enter the right speed for the new hardware and precision.
+- Older workspaces keep their family-only counts as **variant not specified**.
+  The tool does not guess which hardware was installed.
+
+The SKU identifies hardware; it does not determine serving speed by itself.
+That still needs a benchmark for the model, software setup, and response-time
+target.
+
+## Which NVIDIA workloads are in the example?
+
+The example replaces generic search and assistant services with these areas:
+
+- **[Nemotron / NIM](https://www.nvidia.com/en-us/ai-data-science/foundation-models/nemotron/):**
+  language-model development and serving.
+- **[DRIVE / Alpamayo](https://blogs.nvidia.com/blog/robotaxi-leaders-full-stack-open-platform/):**
+  autonomous-driving model training, simulation, and cloud evaluation.
+  In-vehicle inference on DRIVE hardware is a separate capacity problem.
+- **[Isaac / GR00T](https://www.nvidia.com/en-us/industries/robotics/isaac-groot/):**
+  robotics model development, simulation, and policy evaluation. On-robot
+  Jetson inference is separate from the data-center fleet.
+- **[Cosmos](https://www.nvidia.com/en-us/ai/cosmos/):**
+  world models, synthetic video generation, and physical-AI data.
+- **[Omniverse](https://www.nvidia.com/en-us/omniverse/):**
+  digital twins, rendering, and simulation.
+- **[BioNeMo](https://www.nvidia.com/en-us/clara/bionemo/):**
+  biomolecular model development and inference.
+- **[ChipNeMo](https://blogs.nvidia.com/blog/llm-semiconductors-chip-nemo/):**
+  NVIDIA's published research on language models for chip-design assistance.
+
+Public sources do not show how NVIDIA splits its own GPU usage across these
+areas, so this is not a spending ranking. The example's traffic, GPU counts,
+and performance inputs are illustrative planning data.
+
+For non-text services, a request means one fixed, benchmarked work item—for
+example, a render, a video generation, or a policy evaluation. Request rates
+from different kinds of work are not interchangeable. The forecast converts
+each service's own work into GPUs before adding capacity requirements.
+
+The training examples are dense language-model experiments. The dense training
+formula below is not applied to every Cosmos, robotics, or simulation workload.
 
 ## How would it work?
 
@@ -82,7 +150,7 @@ Import tests showing how many requests a particular model and GPU configuration
 can handle while meeting the required response time.
 
 This tells us **how to convert expected traffic into GPUs**. Record the model,
-GPU type, software setup, and input/output sizes alongside each result.
+exact GPU SKU, software setup, and input/output sizes alongside each result.
 
 ### 4. Hardware inventory
 
@@ -114,7 +182,7 @@ The data tells us what happened. Teams still need to tell us what they intend
 to do next.
 
 1. **Open Capacity forecast.** It starts with a six-month prediction learned
-   from service history. Filter by service, team, or GPU type.
+   from service history. Filter by service, team, or GPU SKU.
 2. **Adjust the prediction.** Enter traffic above or below the forecast, or a
    change in serving throughput. Click **Update forecast** to save and compare.
    The base forecast stays unchanged.
@@ -218,7 +286,7 @@ spare, the service needs **3,938 groups, or 31,504 GPUs**.
 These are illustrative inputs, not measured hardware performance.
 
 A saved performance profile lets services share a test result. It must match
-the GPU type, configuration key, and request-size limits, and its evidence must
+the exact GPU SKU, configuration key, and request-size limits, and its evidence must
 be dated before planning starts. A mismatch makes the estimate unavailable;
 the portal does not quietly use a different number. User-supplied test results
 are not independently verified.
@@ -248,7 +316,7 @@ runs in the same month overlap; it does not find an efficient schedule.
 
 ### D. Compare demand with supply
 
-For each month and GPU type:
+For each month and GPU SKU:
 
 ```text
 Total needed = serving GPUs + training GPUs
@@ -261,8 +329,8 @@ Shortage = total needed - available
 For example, `64,000 - 4,000 - 3,200 + 8,192` gives 64,992 available GPUs.
 If demand is 70,000, the shortage is **5,008 GPUs**.
 
-Keep GPU types separate: spare H100 GPUs do not automatically solve an H200
-shortage. Likewise, a job needing 4,096 GPUs at once cannot run simply because
+Keep SKUs separate: even two H100 variants have separate demand and inventory.
+Likewise, a job needing 4,096 GPUs at once cannot run simply because
 enough GPU-hours are available across different days.
 
 New additions count from the start of their entered month. Service and team
@@ -301,7 +369,7 @@ model comparison described above.
 
 ![History-based GPU forecast with editable scenario controls](docs/screenshots/capacity-forecast.png)
 
-The remaining captures show supporting pages from the earlier version.
+The supporting pages use the same NVIDIA workload example and exact GPU SKUs.
 
 **Consumption:** see which services use GPUs and how usage changes.
 
@@ -340,8 +408,12 @@ Start-Process .\portal\index.html
 There is no server, build step, or package installation.
 Edits save in the browser's local storage. Export workspace JSON to keep a copy
 or move it to another browser. Import replaces the workspace after validation
-and confirmation. Older version-1 workspaces are upgraded without changing their
-existing saved inputs. Forecast adjustments are included in workspace exports.
+and confirmation. Version-1 and version-2 workspaces upgrade to version 3 while
+preserving their inputs. Existing family-level counts remain unspecified
+variants; loading the new NVIDIA workload demo requires explicit confirmation
+in **Data & assumptions**. Forecast adjustments are included in workspace exports.
+The `pool` field now holds the SKU ID. Monthly CSV also includes the SKU name,
+memory, and form factor; forecast JSON includes the SKU catalog.
 
 The sample history ends November 9, 2026. The default plan covers December 2026
 through May 2027. You can enter a different planning start month.
@@ -349,13 +421,14 @@ through May 2027. You can enter a different planning start month.
 Run the JavaScript calculation tests with Node.js:
 
 ```powershell
-node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs
+node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs .\tests\sku-model.test.cjs
 ```
 
 The calculations are in [portal/model.js](portal/model.js), the UI is in
 [portal/app.js](portal/app.js), and tests are in
 [tests/portal-model.test.cjs](tests/portal-model.test.cjs) and
-[tests/forecast-model.test.cjs](tests/forecast-model.test.cjs).
+[tests/forecast-model.test.cjs](tests/forecast-model.test.cjs), with SKU and
+migration checks in [tests/sku-model.test.cjs](tests/sku-model.test.cjs).
 
 ## What it does not do yet
 

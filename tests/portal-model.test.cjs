@@ -5,9 +5,9 @@ const M = require("../portal/model.js");
 test("demo validates and has a synthetic 200,000-GPU inventory", () => {
   const s = M.demo();
   assert.equal(M.POOLS.reduce((n, p) => n + s.supply[p].installed, 0), 200000);
-  assert.equal(s.records.length, 360);
+  assert.equal(s.records.length, 420);
   assert.ok(s.records.every(r => r.source === "synthetic"));
-  assert.equal(M.validate(JSON.parse(JSON.stringify(s))).services.length, 6);
+  assert.equal(M.validate(JSON.parse(JSON.stringify(s))).services.length, 7);
 });
 
 test("calendar months cross year boundaries", () => {
@@ -39,7 +39,7 @@ test("missing baseline remains missing, not zero healthy demand", () => {
   const s = M.demo();
   s.records = [];
   assert.equal(M.inference(s, s.services[0], 0).gpus, null);
-  const p = M.portfolio(s)[0].pools.find(p => p.pool === "H200");
+  const p = M.portfolio(s)[0].pools.find(p => p.pool === "H200-SXM-141GB");
   assert.equal(p.complete, false);
   assert.equal(p.missing, 2);
 });
@@ -73,8 +73,8 @@ test("increased token count and worse MFU cannot reduce gang requirement", () =>
 test("supply additions apply only after commissioning; reserve is deducted once", () => {
   const s = M.demo();
   const result = M.portfolio(s);
-  const jan = result[1].pools.find(p => p.pool === "H200");
-  const feb = result[2].pools.find(p => p.pool === "H200");
+  const jan = result[1].pools.find(p => p.pool === "H200-SXM-141GB");
+  const feb = result[2].pools.find(p => p.pool === "H200-SXM-141GB");
   assert.equal(jan.usable, 56800);
   assert.equal(feb.usable, 64992);
   assert.equal(jan.training, M.training(s.training[0]).totalGpus);
@@ -92,10 +92,10 @@ test("service filtering changes demand, not shared organization supply", () => {
 
 test("team filtering includes owning-team training and does not change supply", () => {
   const s = M.demo();
-  const team = M.portfolio(s, "all", "Applied AI");
+  const team = M.portfolio(s, "all", s.services[0].team);
   const full = M.portfolio(s);
-  assert.equal(team[1].pools.find(p => p.pool === "H200").training, M.training(s.training[0]).totalGpus);
-  assert.equal(team[3].pools.find(p => p.pool === "B200").training, 0);
+  assert.equal(team[1].pools.find(p => p.pool === "H200-SXM-141GB").training, M.training(s.training[0]).totalGpus);
+  assert.equal(team[3].pools.find(p => p.pool === "B200-SXM-180GB").training, 0);
   assert.equal(team[0].usable, full[0].usable);
   assert.ok(team[0].required < full[0].required);
 });
@@ -179,7 +179,7 @@ test("v1 migration preserves historical sizing, does not mutate input, and is se
   }
   const snapshot = JSON.stringify(legacy);
   const migrated = M.validate(legacy);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, 3);
   assert.equal(JSON.stringify(legacy), snapshot);
   assert.equal(migrated.services[0].demandMethod, "historical");
   assert.deepEqual(M.portfolio(migrated), expected);
@@ -198,6 +198,7 @@ test("v1 migration supports maximum-length service IDs without invalid configura
 
 test("malformed v2 input does not silently receive v1 migration defaults", () => {
   const s = M.demo();
+  s.version = 2;
   delete s.services[0].drivers;
   assert.throws(() => M.validate(s), /Demand-driver inputs are required/);
 });
@@ -251,7 +252,7 @@ test("matching reusable profiles drive sizing instead of unused inline values", 
 
 test("editing a shared profile recalculates all linked services", () => {
   const s = M.demo(), b = s.benchmarks[0];
-  const linked = [s.services[0], s.services[4]];
+  const linked = [s.services[0], s.services[6]];
   for (const service of linked) {
     service.benchmarkId = b.id;
     service.workloadKey = b.workloadKey;

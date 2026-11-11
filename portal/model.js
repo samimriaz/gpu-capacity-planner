@@ -1,6 +1,24 @@
 (function (root) {
   "use strict";
-  const POOLS = ["H100", "H200", "B200"];
+  const SKU_CATALOG = [
+    {id: "H100-SXM-80GB", name: "H100 SXM 80GB", family: "H100", memoryGB: 80, memoryType: "HBM3", formFactor: "SXM", source: "https://www.nvidia.com/en-us/data-center/h100/"},
+    {id: "H100-PCIE-80GB", name: "H100 PCIe 80GB", family: "H100", memoryGB: 80, memoryType: "HBM2e", formFactor: "PCIe", source: "https://www.nvidia.com/en-us/data-center/h100/"},
+    {id: "H200-SXM-141GB", name: "H200 SXM 141GB", family: "H200", memoryGB: 141, memoryType: "HBM3e", formFactor: "SXM", source: "https://www.nvidia.com/en-us/data-center/h200/"},
+    {id: "B200-SXM-180GB", name: "B200 SXM 180GB", family: "B200", memoryGB: 180, memoryType: "HBM3e", formFactor: "SXM", source: "https://docs.nvidia.com/dgx/dgxb200-user-guide/introduction-to-dgxb200.html"},
+    {id: "RTX-PRO-6000-BW-SERVER-96GB", name: "RTX PRO 6000 Blackwell Server 96GB", family: "RTX PRO", memoryGB: 96, memoryType: "GDDR7", formFactor: "PCIe", source: "https://www.nvidia.com/en-us/data-center/rtx-pro-6000-blackwell-server-edition/"},
+    ...["H100", "H200", "B200"].map(id => ({id, name: `${id} - variant not specified`, family: id,
+      memoryGB: null, memoryType: "Unspecified", formFactor: "Unspecified", legacy: true, source: ""})),
+  ];
+  const POOLS = SKU_CATALOG.map(s => s.id);
+  const WORKLOAD_AREAS = [
+    {name: "Nemotron / NIM", description: "Language-model training, evaluation and inference. The demo tracks model-serving requests.", source: "https://www.nvidia.com/en-us/ai-data-science/foundation-models/nemotron/"},
+    {name: "DRIVE / Alpamayo", description: "Autonomous-driving model development and cloud evaluation. Training and simulation are data-center work; in-vehicle DRIVE inference is separate.", source: "https://blogs.nvidia.com/blog/robotaxi-leaders-full-stack-open-platform/"},
+    {name: "Isaac / GR00T", description: "Robot-model development, simulation and policy evaluation. On-robot Jetson inference is separate from the server fleet.", source: "https://developer.nvidia.com/isaac/gr00t"},
+    {name: "Cosmos", description: "World models, synthetic video generation and physical-AI evaluation.", source: "https://www.nvidia.com/en-us/ai/cosmos/"},
+    {name: "Omniverse", description: "Rendering, physics, digital twins and synthetic sensor data.", source: "https://www.nvidia.com/en-us/omniverse/"},
+    {name: "BioNeMo", description: "Biomolecular model training, protein design and drug-discovery inference.", source: "https://www.nvidia.com/en-us/clara/bionemo/"},
+    {name: "ChipNeMo", description: "NVIDIA's published research on language models for chip-design assistance.", source: "https://blogs.nvidia.com/blog/llm-semiconductors-chip-nemo/"},
+  ];
   const DAY = 86400000;
   const fail = (message) => { throw new Error(message); };
   function number(value, name, min = 0, max = 1e15, integer = false) {
@@ -23,7 +41,18 @@
     return value;
   }
   function pool(value) {
-    if (!POOLS.includes(value)) fail("Choose H100, H200 or B200; pools cannot be substituted automatically.");
+    if (!POOLS.includes(value)) fail("Choose a supported GPU SKU; variants cannot be substituted automatically.");
+  }
+  function skuInfo(id) {
+    pool(id);
+    return SKU_CATALOG.find(s => s.id === id);
+  }
+  function emptySupply() {
+    return {...Object.fromEntries(POOLS.map(p => [p, {installed: 0, unavailable: 0, reserve: 0}])), additions: []};
+  }
+  function activePools(state) {
+    return POOLS.filter(p => state.supply[p].installed > 0 || state.services.some(s => s.pool === p) ||
+      state.training.some(t => t.pool === p) || state.supply.additions.some(a => a.pool === p));
   }
   function defaultDrivers() {
     return {activeUsers: 10000000, sessionsPerUser: 2, requestsPerSession: 5,
@@ -40,12 +69,21 @@
     }
   }
   function upgrade(state) {
-    if (!state || state.version !== 1) return state;
-    if (!Array.isArray(state.services)) fail("Legacy workspace requires services.");
-    return {...state, version: 2, benchmarks: [], services: state.services.map(s => ({
-      ...s, demandMethod: "historical", drivers: defaultDrivers(), benchmarkId: "",
-      workloadKey: s.id, inputTokens: 1024, outputTokens: 256,
-    }))};
+    if (state?.version === 1) {
+      if (!Array.isArray(state.services)) fail("Legacy workspace requires services.");
+      state = {...state, version: 2, benchmarks: [], services: state.services.map(s => ({
+        ...s, demandMethod: "historical", drivers: defaultDrivers(), benchmarkId: "",
+        workloadKey: s.id, inputTokens: 1024, outputTokens: 256,
+      }))};
+    }
+    if (state?.version === 2) {
+      if (!state.supply || !Array.isArray(state.supply.additions)) fail("Legacy workspace requires supply inputs.");
+      for (const p of ["H100", "H200", "B200"]) {
+        if (!state.supply[p]) fail(`Missing legacy supply for ${p}.`);
+      }
+      return {...state, version: 3, supply: {...emptySupply(), ...state.supply}};
+    }
+    return state;
   }
   function serviceCheck(s) {
     text(s.id, "Service ID"); text(s.name, "Service name"); text(s.team, "Team");
@@ -104,13 +142,15 @@
     number(t.peakTflops, "Dense peak TFLOP/s per GPU", 1, 100000);
     number(t.mfu, "Model FLOPs utilization %", 1, 100);
     number(t.memoryGB, "Memory per GPU (GB)", 1, 10000);
+    const hardware = skuInfo(t.pool);
+    if (hardware.memoryGB !== null && t.memoryGB > hardware.memoryGB) fail(`Memory budget exceeds ${hardware.name}'s ${hardware.memoryGB} GB per GPU.`);
     number(t.bytesPerParameter, "Training-state bytes per parameter", 1, 100);
     number(t.block, "Topology block size", 1, 65536, true);
     number(t.runs, "Concurrent runs", 1, 1000, true);
   }
   function validate(state) {
     state = upgrade(state);
-    if (!state || state.version !== 2) fail("Unsupported workspace version.");
+    if (!state || state.version !== 3) fail("Unsupported workspace version.");
     month(state.startMonth);
     if (state.forecast !== undefined) forecastCheck(state.forecast);
     if (!Array.isArray(state.services) || !state.services.length || state.services.length > 1000) fail("Workspace requires 1–1,000 services.");
@@ -134,6 +174,7 @@
     state.training.forEach(t => trainingCheck(t, state.services));
     if (new Set(state.training.map(t => t.id)).size !== state.training.length) fail("Training plan IDs must be unique.");
     if (!state.supply || !Array.isArray(state.supply.additions)) fail("Supply inputs are required.");
+    if (Object.keys(state.supply).some(p => p !== "additions" && !POOLS.includes(p))) fail("Supply references an unknown GPU SKU.");
     for (const p of POOLS) {
       const s = state.supply[p];
       if (!s) fail(`Missing supply for ${p}.`);
@@ -335,7 +376,7 @@
         reason: !demand.available ? demand.reason : !performance.available ? performance.reason : ""};
     });
     const monthly = months(state.startMonth).map((m, index) => {
-      const pools = POOLS.filter(p => selectedPool === "all" || p === selectedPool).map(p => {
+      const pools = activePools(state).filter(p => selectedPool === "all" || p === selectedPool).map(p => {
         const entries = evidence.filter(e => e.service.pool === p);
         const estimates = entries.filter(e => e.available).map(e => {
           const baseRps = e.demand.monthly[index].peakRps;
@@ -399,7 +440,7 @@
   }
   function portfolio(state, selectedId = "all", selectedTeam = "all") {
     return months(state.startMonth).map((m, index) => {
-      const pools = POOLS.map(p => {
+      const pools = activePools(state).map(p => {
         const services = state.services.filter(s => s.pool === p && (selectedId === "all" || s.id === selectedId) &&
           (selectedTeam === "all" || s.team === selectedTeam));
         const estimates = services.map(s => inference(state, s, index));
@@ -443,17 +484,18 @@
   }
   function demo() {
     const defs = [
-      ["assistant", "Enterprise Assistant", "Applied AI", "H200", 8, 24, 90, 15000],
-      ["search", "Semantic Search", "Search & Discovery", "H100", 4, 90, 45, 60000],
-      ["copilot", "Code Intelligence", "Developer Platforms", "B200", 8, 30, 120, 18000],
-      ["vision", "Vision Understanding", "Multimodal AI", "H100", 4, 50, 60, 20000],
-      ["recommend", "Recommendations", "Personalization", "H200", 4, 120, 30, 80000],
-      ["agents", "Agent Runtime", "Applied AI", "B200", 8, 20, 150, 10000],
+      ["assistant", "Nemotron / NIM inference", "Language & Reasoning", "H200-SXM-141GB", 8, 24, 90, 15000],
+      ["search", "BioNeMo model inference", "AI for Science", "H100-PCIE-80GB", 4, 90, 45, 60000],
+      ["copilot", "Cosmos video generation", "World Models", "B200-SXM-180GB", 8, 30, 120, 18000],
+      ["vision", "DRIVE / Alpamayo cloud evaluation", "Autonomous Vehicles", "H100-SXM-80GB", 4, 50, 60, 20000],
+      ["recommend", "Omniverse render requests", "Simulation & Digital Twins", "RTX-PRO-6000-BW-SERVER-96GB", 4, 120, 30, 80000],
+      ["agents", "Isaac / GR00T policy evaluation", "Robotics", "B200-SXM-180GB", 8, 20, 150, 10000],
+      ["chip-design", "ChipNeMo design assistance", "Chip Design Research", "H200-SXM-141GB", 8, 40, 45, 10000],
     ];
     const services = defs.map(([id, name, team, p, gpus, rps, annualGrowth]) => ({
       id, name, team, pool: p, gpusPerReplica: gpus, rpsPerReplica: rps,
       annualGrowth, monthlyLaunchRps: 0, headroom: 20,
-      profile: "Illustrative RPS-at-SLO; not benchmarked. Replace with matching model/runtime/latency measurements.",
+      profile: "Example requests/second for a fixed workload on this SKU. Match model, job size, software and response-time target.",
     }));
     const records = [];
     for (let day = 0; day < 60; day++) {
@@ -467,31 +509,35 @@
       });
     }
     return validate({
-      version: 2, startMonth: "2026-12",
+      version: 3, startMonth: "2026-12",
       services: services.map(s => ({...s, demandMethod: "historical", drivers: defaultDrivers(),
-        benchmarkId: "", workloadKey: `${s.id}-demo-fp16-slo`, inputTokens: 1024, outputTokens: 256})),
+        benchmarkId: "", workloadKey: `${s.id}-demo-fixed-request`, inputTokens: ["assistant", "chip-design"].includes(s.id) ? 1024 : 0,
+        outputTokens: ["assistant", "chip-design"].includes(s.id) ? 256 : 0})),
       benchmarks: services.map(s => ({
         id: `profile-${s.id}`, name: `${s.name} demo profile`, pool: s.pool,
-        workloadKey: `${s.id}-demo-fp16-slo`, gpusPerReplica: s.gpusPerReplica,
-        rpsPerReplica: s.rpsPerReplica, minInputTokens: 0, maxInputTokens: 2048,
-        minOutputTokens: 0, maxOutputTokens: 512, measuredOn: "2026-11-09",
+        workloadKey: `${s.id}-demo-fixed-request`, gpusPerReplica: s.gpusPerReplica,
+        rpsPerReplica: s.rpsPerReplica, minInputTokens: 0, maxInputTokens: ["assistant", "chip-design"].includes(s.id) ? 2048 : 0,
+        minOutputTokens: 0, maxOutputTokens: ["assistant", "chip-design"].includes(s.id) ? 512 : 0, measuredOn: "2026-11-09",
         source: "synthetic", evidence: "Illustrative only; not a real hardware benchmark. Match model, precision, runtime and latency SLO.",
       })), records,
       training: [
-        {id: "train-1", name: "Foundation model refresh", serviceId: "assistant", pool: "H200", month: "2027-01",
-          parametersB: 405, tokensB: 2000, days: 12, peakTflops: 989, mfu: 40, memoryGB: 141, bytesPerParameter: 16, block: 256, runs: 2},
-        {id: "train-2", name: "Code model pretraining", serviceId: "copilot", pool: "B200", month: "2027-03",
-          parametersB: 200, tokensB: 3000, days: 14, peakTflops: 2250, mfu: 40, memoryGB: 180, bytesPerParameter: 16, block: 256, runs: 2},
+        {id: "train-1", name: "Dense language-model experiment", serviceId: "assistant", pool: "H200-SXM-141GB", month: "2027-01",
+          parametersB: 70, tokensB: 1000, days: 12, peakTflops: 989, mfu: 40, memoryGB: 141, bytesPerParameter: 16, block: 256, runs: 2},
+        {id: "train-2", name: "Chip-design dense-model experiment", serviceId: "chip-design", pool: "B200-SXM-180GB", month: "2027-03",
+          parametersB: 43, tokensB: 1000, days: 14, peakTflops: 2250, mfu: 40, memoryGB: 180, bytesPerParameter: 16, block: 256, runs: 2},
       ],
       supply: {
-        H100: {installed: 80000, unavailable: 5000, reserve: 4000},
-        H200: {installed: 64000, unavailable: 4000, reserve: 3200},
-        B200: {installed: 56000, unavailable: 6000, reserve: 2800},
-        additions: [{pool: "H200", month: "2027-02", gpus: 8192}],
+        ...emptySupply(),
+        "H100-SXM-80GB": {installed: 48000, unavailable: 3000, reserve: 2400},
+        "H100-PCIE-80GB": {installed: 16000, unavailable: 1000, reserve: 800},
+        "H200-SXM-141GB": {installed: 64000, unavailable: 4000, reserve: 3200},
+        "B200-SXM-180GB": {installed: 56000, unavailable: 6000, reserve: 2800},
+        "RTX-PRO-6000-BW-SERVER-96GB": {installed: 16000, unavailable: 1000, reserve: 800},
+        additions: [{pool: "H200-SXM-141GB", month: "2027-02", gpus: 8192}],
       },
     });
   }
-  const api = {POOLS, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
+  const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
     training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
