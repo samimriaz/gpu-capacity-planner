@@ -57,9 +57,14 @@ The interface uses a white background, dark text, and subdued chart colors.
 
 The first page starts with **How this capacity forecast is calculated**, followed
 by the Service, Organization, GPU SKU, and planning-start filters, then the
-scenario controls. The explanation distinguishes inference throughput from training MFU, then
-shows a live worked example, a service-by-service conversion table, and the
-rollup into monthly GPU requirements and SKU shortages. Open **Show the formulas
+scenario controls. The explanation starts with a small chatbot example: 16
+requests/second growing to 24, with each H100 serving 8 usable requests/second
+after keeping 20% spare. The requirement rises from 2 to 3 H100 GPUs, so add 1
+if 2 are already available. These fixed teaching numbers do not change the
+workspace inputs or forecast. Detailed calculations distinguish inference
+throughput from training MFU, then show a live worked example, a service-by-service
+conversion table, and the rollup into monthly GPU requirements and SKU shortages.
+Open **Show the formulas
 and live calculation** to inspect the numbers; they update with the selected
 service, month, growth, and filters.
 

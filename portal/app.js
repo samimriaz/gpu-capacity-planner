@@ -280,15 +280,17 @@
   }
   function forecastLogicPanel(workspace, report) {
     return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Goal: know which GPU SKUs are needed, how many, and in which month the company will run short.</p></div></div>
+      <div class="logic-key"><h3>A small example: one chatbot</h3><p>Assume the model fits on one H100 GPU. These are simple example numbers, not your workspace forecast.</p></div>
       <ol class="logic-steps">
-        <li><h3>1. Forecast peak requests/second</h3><p>Use each service's request history or an entered demand plan. Apply its growth and launch traffic.</p></li>
-        <li><h3>2. Convert request demand to GPUs</h3><p>Divide peak requests/second (RPS) by that model and SKU's throughput in RPS per replica at the required response time. Keep spare headroom and round up to whole replicas.</p></li>
-        <li><h3>3. Add training separately</h3><p>Use model size, training tokens, deadline, memory, and peak computing speed x MFU. Round for topology and concurrent runs.</p></li>
-        <li><h3>4. Add up the company plan</h3><p>Size each service separately, then add GPUs by organization, SKU and month. Compare with available GPUs.</p></li>
+        <li><h3>1. Forecast requests</h3><p>Today's peak is <strong>16 requests/second</strong>. Expect <strong>50% growth next month</strong>.<br><strong>16 x 1.5 = 24 requests/second</strong> next month.</p></li>
+        <li><h3>2. Find what one GPU can handle</h3><p>A benchmark shows one H100 serves <strong>10 requests/second</strong> at the required response time. Keep <strong>20% spare</strong> for traffic spikes.<br><strong>10 x 80% = 8 usable requests/second per GPU.</strong></p></li>
+        <li><h3>3. Calculate GPUs needed</h3><p>Today: <strong>16 / 8 = 2 H100 GPUs.</strong><br>Next month: <strong>24 / 8 = 3 H100 GPUs.</strong><br>If you already have 2 available, <strong>add 1 H100 next month.</strong></p></li>
       </ol>
-      <p class="logic-key"><strong>Inference uses throughput, not MFU. Training uses MFU.</strong> GPU-hours and GPU busy % describe observed usage; this forecast estimates capacity to provision, not future busy %. Busy % is not MFU.</p>
+      <p class="logic-key"><strong>Expected requests/second / usable requests/second per GPU = GPUs needed.</strong> Always round up: 3.2 GPUs means 4 GPUs.</p>
+      <p class="logic-key">Repeat for each service, then add requirements by GPU SKU and month. If one model copy needs several GPUs, first calculate how many copies you need, then multiply by GPUs per copy. Add scheduled training separately. The live calculation below uses your selected service, month and growth settings.</p>
       <details id="forecast-logic-details" ${$("#forecast-logic-details")?.open ? "open" : ""}><summary>Show the formulas and live calculation for the selected service and month</summary>
-        <div class="logic-formulas"><p><strong>Inference:</strong> <code>replicas = round up (peak RPS / (RPS per replica x usable capacity share))</code>; <code>GPUs = replicas x GPUs per replica</code>.</p>
+        <div class="logic-formulas"><p><strong>Inference uses throughput, not MFU. Training uses MFU.</strong> GPU-hours and GPU busy % describe observed usage; this forecast estimates capacity to provision, not future busy %. Busy % is not MFU.</p>
+        <p><strong>Inference:</strong> A replica is one serving copy of the model. <code>replicas = round up (peak RPS / (RPS per replica x usable capacity share))</code>; <code>GPUs = replicas x GPUs per replica</code>.</p>
         <p><strong>Training:</strong> <code>work = 6 x parameters x training tokens</code>; <code>compute GPUs = round up (work / (active seconds x peak FLOP/s per GPU x MFU fraction))</code>. Use the larger compute/memory count, round to topology blocks, then multiply by concurrent runs.</p>
         <p>For history-based services, compare a recent average with a weekly trend plus weekday pattern using 14 held-out days, refit, then size against the busiest predicted day of each month. At least 42 consecutive days are needed; up to 84 are used. Missing history requires an explicit demand plan, not an assumed zero.</p></div>
         <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
