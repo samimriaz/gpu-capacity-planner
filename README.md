@@ -53,8 +53,9 @@ The starting point is each service, not a company-wide GPU growth target:
 
 Open **Scenario planner**, the default page:
 
-The first page explains **How this capacity forecast is calculated** before the
-editing controls. It distinguishes inference throughput from training MFU, then
+The first page starts with **How this capacity forecast is calculated**, followed
+by the Service, Organization, GPU SKU, and planning-start filters, then the
+scenario controls. The explanation distinguishes inference throughput from training MFU, then
 shows a live worked example, a service-by-service conversion table, and the
 rollup into monthly GPU requirements and SKU shortages. Open **Show the formulas
 and live calculation** to inspect the numbers; they update with the selected

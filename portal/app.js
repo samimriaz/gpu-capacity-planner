@@ -445,6 +445,8 @@
     });
     $("#content").innerHTML = ({overview, inference: inferenceView, benchmarks: benchmarksView, forecasts: forecastsView,
       training: trainingView, capacity: capacityView, planning: planningView, data: dataView})[view]();
+    const logic = $("#content .forecast-logic");
+    $("#planning-introduction").replaceChildren(...(logic ? [logic] : []));
   }
   function field(name, label, value, type = "number", extra = "", help = "") {
     return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra} required>${help ? `<span class="help">${help}</span>` : ""}</label>`;
