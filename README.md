@@ -53,6 +53,8 @@ The starting point is each service, not a company-wide GPU growth target:
 
 Open **Scenario planner**, the default page:
 
+The interface uses a white background, dark text, and subdued chart colors.
+
 The first page starts with **How this capacity forecast is calculated**, followed
 by the Service, Organization, GPU SKU, and planning-start filters, then the
 scenario controls. The explanation distinguishes inference throughput from training MFU, then
