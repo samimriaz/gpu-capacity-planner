@@ -72,9 +72,12 @@ service, month, growth, and filters.
   usage. The forecast estimates capacity to provision and assumes monthly peaks
   and scheduled training can overlap; it does not optimize their sharing.
 
-- Choose a service under **Set service growth**. Drag the slider or type a
-  percentage. Results preview immediately; release the slider or leave the
-  number field to save.
+- Set growth directly in each row of **Inference demand by service**, beside
+  that service's current usage. Drag the slider or type a percentage. Results
+  preview immediately without losing keyboard focus or interrupting a drag;
+  release the slider or leave the number field to save. **Edit model inputs**
+  and **Benchmark pair** are available in the same row. The separate service
+  selector and growth panel are no longer needed.
 - **+50% means 50% extra demand by month six**, on top of the traffic forecast.
   The increase compounds across six months, so month one gets a smaller
   increase. It is not a flat increase in every month or a replacement for the

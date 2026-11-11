@@ -278,16 +278,18 @@
         <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
       </details></section>`;
   }
-  function inferenceServiceDemand(report) {
+  function inferenceServiceDemand(workspace, report) {
     const services = report.inferenceServices;
     const months = report.monthly.map(m => m.month);
     const rows = services.map(s => {
       const current = s.history.current;
+      const service = workspace.services.find(item => item.id === s.id);
       return `<tr data-model-row="${esc(s.id)}"><td><button class="text-button service-name" data-service-trend="${esc(s.id)}">${esc(s.name)}</button><span class="subtext">${esc(s.team)}<br>${esc(skuName(s.pool))}</span></td>
-        <td>${fmt(current?.peakRps, 2)}<span class="subtext">${current ? `Through ${current.end}; ${current.days}/28 days observed` : esc(s.history.observedGrowthReason)}</span></td>
-        <td>${fmt(current?.averageAllocated, 1)}</td><td>${pct(s.history.observedGrowthPct)}<span class="subtext">${esc(s.history.observedGrowthReason || "Recent 28-day peak vs previous 28-day peak")}</span></td>
-        ${s.monthly.map(m => `<td>${fmt(m.gpus)}${m.reason ? `<span class="subtext">${esc(m.reason)}</span>` : ""}</td>`).join("")}
-        <td>${pct(s.forecastGrowthPct)}<span class="subtext">${esc(s.forecastGrowthReason || "Planning month 1 to 6")}</span></td>
+        <td>${fmt(current?.peakRps, 2)}<span class="subtext">Peak work/second</span><span class="subtext">${fmt(current?.averageAllocated, 1)} assigned GPUs (observed avg)</span><span class="subtext">${current ? `Through ${current.end}; ${current.days}/28 days observed` : esc(s.history.observedGrowthReason)}</span></td>
+        <td class="service-growth"><p class="help">Extra demand by month six (%)</p><div class="growth-editor"><input type="range" min="-90" max="300" step="0.1" value="${service.scenarioGrowthPct ?? 0}" data-service-growth="${esc(s.id)}" aria-label="Growth slider for ${esc(s.name)}"><input type="number" min="-90" max="300" step="0.1" value="${service.scenarioGrowthPct ?? 0}" required data-service-growth="${esc(s.id)}" aria-label="Growth percentage for ${esc(s.name)}"></div><div class="service-growth-actions"><button class="text-button" data-edit-service="${esc(s.id)}">Edit model inputs</button>${calibrationButton("inference", service)}</div><p class="help" data-growth-status role="status">Saved scenario.</p></td>
+        <td>${pct(s.history.observedGrowthPct)}<span class="subtext">${esc(s.history.observedGrowthReason || "Recent 28-day peak vs previous 28-day peak")}</span></td>
+        ${s.monthly.map(m => `<td data-service-projection="${esc(s.id)}:${m.month}">${fmt(m.gpus)}${m.reason ? `<span class="subtext">${esc(m.reason)}</span>` : ""}</td>`).join("")}
+        <td data-service-projection="${esc(s.id)}:growth">${pct(s.forecastGrowthPct)}<span class="subtext">${esc(s.forecastGrowthReason || "Planning month 1 to 6")}</span></td>
         <td><button class="text-button" data-drill-service="${esc(s.id)}">Open model</button></td></tr>`;
     }).join("");
     const selected = services.find(s => s.id === planningQuickService) || services[0];
@@ -300,9 +302,9 @@
         <div><h3>Forecast GPU requirement</h3><p class="help">Physical GPUs needed at each month's predicted peak. This is inference only; training is added separately.</p>
         ${chart(selected.monthly, [{key: "gpus", name: "Required inference GPUs", color: "#b7ef6a"}], `${selected.name}: monthly GPU requirement`, 0)}</div></div></section>`;
     }
-    return `<section class="panel service-demand" id="inference-service-demand" aria-labelledby="inference-service-demand-title"><div class="panel-heading"><div><h2 id="inference-service-demand-title">Inference demand by service</h2><p>Service names, observed demand, historical growth and every forecast month. Select a service name for its trend, or double-click its row to open the model.</p></div></div>
+    return `<section class="panel service-demand" id="inference-service-demand" aria-labelledby="inference-service-demand-title"><div class="panel-heading"><div><h2 id="inference-service-demand-title">Inference demand by service</h2><p>${services.length ? "Edit growth beside each service's usage. Drag its slider or enter a percentage; release the slider or leave the number field to save. Extra demand compounds to the entered percentage by month six, on top of the learned trend; +0% keeps that trend. Launch traffic is added separately." : "No inference service matches these filters. The training roadmap remains available below."}</p></div></div>
       <p class="panel-body description">Current demand is the peak work/second in the latest observed 28-day window before planning starts, not live traffic. Assigned GPUs are an observed average, not the forecast requirement. Historical growth compares complete 28-day peak-demand windows; forecast growth compares month-one and month-six GPU requirements. Scroll right for all months; service names stay visible.</p>
-      ${table(["Service / organization / SKU", "Current peak work/s", "Assigned GPUs (28-day avg)", "Historical demand growth", ...months.map(m => `${m} GPUs`), "Forecast GPU growth", ""], rows)}</section>${trend}`;
+      ${table(["Service / organization / SKU", "Current usage / demand", "Growth input", "Historical demand growth", ...months.map(m => `${m} GPUs`), "Forecast GPU growth", ""], rows)}</section><div id="service-demand-trends">${trend}</div>`;
   }
   function planningResults(workspace, report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter)) {
     const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
@@ -331,9 +333,9 @@
       `<section class="panel"><div class="panel-heading"><div><h2>Inference and training models</h2><p>Inference uses ${focused.month}; training shows each scheduled month. Double-click a model row for details.</p></div></div>${table(["Model / evidence", "Workload", "Month", "Assigned SKU", "GPUs", "H100 equivalents", "Benchmark ratio", ""], models)}</section>`;
     const selected = workspace.services.find(s => s.id === serviceFilter);
     const detail = selected ? `<section class="panel"><div class="panel-heading"><h2>${esc(selected.name)}: model assumptions</h2><button class="button subtle" data-edit-service="${esc(selected.id)}">Edit model inputs</button></div><div class="panel-body description">${esc(selected.profile)}<br>Configuration: ${esc(selected.workloadKey)}. Input / output tokens: ${fmt(selected.inputTokens)} / ${fmt(selected.outputTokens)}. Extra demand by month six: ${pct(selected.scenarioGrowthPct ?? 0)}.<br>H100 equivalents compare this workload only. Divide its equivalent count by its own benchmark ratio to recover its assigned-SKU GPU count; replica rounding has already been applied.</div></section>` : "";
-    return `<div class="kpis">${metric(`GPUs required in ${focused.month}`, fmt(focused.required), focused.physicalComplete ? "Inference plus scheduled training; see SKU split below" : "Partial physical demand: missing sizing inputs", true)}${metric("H100-equivalent requirement", fmt(focused.normalizedRequired, 1), `${focused.count - focused.missing} / ${focused.count} workloads covered; a comparison index`)}${metric("Normalized growth: month 1 to 6", pct(growth), "Same reference SKU, workload-specific ratios")}${metric("Training in selected month", fmt(focused.training), "Added on top of service demand")}</div>${partial}
+    return `<div id="planning-summary"><div class="kpis">${metric(`GPUs required in ${focused.month}`, fmt(focused.required), focused.physicalComplete ? "Inference plus scheduled training; see SKU split below" : "Partial physical demand: missing sizing inputs", true)}${metric("H100-equivalent requirement", fmt(focused.normalizedRequired, 1), `${focused.count - focused.missing} / ${focused.count} workloads covered; a comparison index`)}${metric("Normalized growth: month 1 to 6", pct(growth), "Same reference SKU, workload-specific ratios")}${metric("Training in selected month", fmt(focused.training), "Added on top of service demand")}</div>${partial}
       <section class="panel"><div class="panel-heading"><div><h2>Bottom-up demand: inference + training</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Inference</span><span><i class="amber"></i>Training</span><span><i class="blue"></i>Total</span></div></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference", color: "#b7ef6a"}, {key: "training", name: "Training", color: "#f2bd6d"}, {key: "total", name: "Inference + training", color: "#8daaff"}], normalized ? "H100-equivalent demand by month" : "Physical GPU demand by month", 0)}</div></section>
-      ${inferenceServiceDemand(report)}${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section>`;
+      </div>${inferenceServiceDemand(workspace, report)}<div id="planning-rollups">${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section></div>`;
   }
   function planningView() {
     const horizon = M.months(state.startMonth);
@@ -347,13 +349,13 @@
     return `<div class="planning-toolbar"><div class="planning-breadcrumb"><button class="text-button" data-planning-root>All organizations</button>${teamFilter !== "all" ? ` / <button class="text-button" data-drill-org="${esc(teamFilter)}">${esc(teamFilter)}</button>` : ""}${serviceFilter !== "all" ? ` / ${esc(state.services.find(s => s.id === serviceFilter).name)}` : ""}</div><label>Inspect month<select id="planning-month">${horizon.map(m => `<option ${m === planningMonth ? "selected" : ""}>${m}</option>`).join("")}</select></label><label>Chart units<select id="planning-unit"><option value="physical" ${planningUnit === "physical" ? "selected" : ""}>Physical GPUs</option><option value="h100" ${planningUnit === "h100" ? "selected" : ""}>H100 equivalents</option></select></label><label class="check-option"><input id="planning-training" type="checkbox" ${options.includeTraining ? "checked" : ""}> Include training</label><button class="text-button" data-view="capacity">Global traffic / efficiency adjustments</button></div>
       ${forecastLogicPanel(state, report)}
       <div class="callout info">Build the plan from services upward. Edit a growth number or drag its slider; results preview immediately and save on release or when you leave the field. Drag training cards between months, or use their month selectors. The demo's benchmark pairs are illustrative, not NVIDIA performance claims.</div>
-      <section class="panel"><div class="panel-heading"><div><h2>Set service growth</h2><p>Extra demand by month six, on top of the learned traffic trend. It compounds over six months; +0% keeps that trend. Launch traffic is added separately.</p></div></div><div class="panel-body planning-quick">${quick ? `<label>Service to adjust<select id="planning-quick-service">${services.map(s => `<option value="${esc(s.id)}" ${s.id === quick.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select><span class="help">${esc(quick.team)} / ${esc(skuName(quick.pool))}</span></label><div><label class="help">Extra demand by month six (%)</label><div class="growth-editor"><input type="range" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" data-service-growth="${esc(quick.id)}" aria-label="Growth slider for ${esc(quick.name)}"><input type="number" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" required data-service-growth="${esc(quick.id)}" aria-label="Growth percentage for ${esc(quick.name)}"></div></div><div><button class="text-button" data-edit-service="${esc(quick.id)}">Edit model inputs</button>${calibrationButton("inference", quick)}</div>` : '<p class="help">No inference service matches these filters. Training on this SKU is still included below.</p>'}</div><p id="planning-preview-status" class="panel-body help" role="status">Saved scenario. Change a slider to preview.</p></section>
       <div id="planning-results">${planningResults(state, report)}</div>
       <section class="panel"><div class="panel-heading"><div><h2>Schedule training on top</h2><p>${options.includeTraining ? "Included in totals. Plans within a month are treated as concurrent." : "Excluded from totals. You can still edit or reschedule the roadmap."} Moves preserve the run's active days; impossible calendar moves are rejected.</p></div><button class="button subtle" data-action="training">Add training plan</button></div><div class="training-scroll"><div class="training-board">${horizon.map(m => `<section class="training-lane" data-training-drop="${m}" aria-label="Training scheduled for ${m}"><h3>${m}</h3>${plans.filter(t => t.month === m).map(t => `<article class="training-drag-card" draggable="true" data-training-drag="${esc(t.id)}"><span class="help">Drag to reschedule</span><h3>${esc(t.name)}</h3><p>${fmt(M.training(t).totalGpus)} GPUs<br><span class="help">${esc(skuName(t.pool))}</span></p><label class="help">Move to month<select data-training-month="${esc(t.id)}" aria-label="Move ${esc(t.name)} to month">${horizon.map(month => `<option ${month === m ? "selected" : ""}>${month}</option>`).join("")}</select></label><div class="form-actions"><button class="text-button" data-edit-training="${esc(t.id)}">Edit model</button>${calibrationButton("training", t)}</div></article>`).join("") || '<p class="help">Drop a training plan here.</p>'}</section>`).join("")}</div></div>${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon. Open Training roadmap to see them.</p>' : ""}</section>
       <section class="panel"><div class="panel-heading"><h2>How normalization works</h2></div><div class="panel-body description">For each workload: ratio = benchmark throughput per selected-SKU GPU / benchmark throughput per H100 SXM GPU. H100 equivalents = required GPUs x that ratio. Convert back for that same workload: equivalents / ratio. Compare identical model versions, precision, job sizes and response-time targets; enter full-replica throughput divided by its GPU count.<br>Inference uses fixed work items/second/GPU; training uses training tokens/second/GPU. Ratios are workload-specific, not a universal H100-to-B200 conversion. A GB200 superchip contains a CPU and two GPUs; it is not one interchangeable GPU.<br>Missing, changed or future-dated evidence makes normalized totals unavailable. Physical SKU demand remains visible. This index does not prove memory fit, interconnect compatibility, or that a job can move to another GPU.</div></section>`;
   }
   function previewServiceGrowth(input, persist) {
-    const status = $("#planning-preview-status");
+    const status = input.closest(".service-growth").querySelector("[data-growth-status]");
+    status.classList.toggle("error", !input.checkValidity());
     if (!input.checkValidity()) {
       status.textContent = "Preview not applied. Enter growth between -90% and +300% in steps of 0.1%.";
       return;
@@ -361,6 +363,7 @@
     const next = clone();
     const service = next.services.find(s => s.id === input.dataset.serviceGrowth);
     service.scenarioGrowthPct = Number(input.value);
+    planningQuickService = service.id;
     document.querySelectorAll("[data-service-growth]").forEach(el => {
       if (el !== input && el.dataset.serviceGrowth === service.id) el.value = input.value;
     });
@@ -369,7 +372,17 @@
       status.textContent = "Scenario saved.";
     } else status.textContent = "Live preview - release the slider or leave the number field to save.";
     const report = M.bottomUpForecast(next, serviceFilter, teamFilter, poolFilter);
-    $("#planning-results").innerHTML = planningResults(next, report);
+    // Keep table inputs mounted so typing and pointer drags survive live previews.
+    const preview = document.createElement("template");
+    preview.innerHTML = planningResults(next, report);
+    for (const id of ["planning-summary", "service-demand-trends", "planning-rollups"]) {
+      $(`#${id}`).replaceChildren(...preview.content.querySelector(`#${id}`).childNodes);
+    }
+    const projections = new Map([...preview.content.querySelectorAll("[data-service-projection]")]
+      .map(cell => [cell.dataset.serviceProjection, cell]));
+    document.querySelectorAll("[data-service-projection]").forEach(cell => {
+      cell.replaceChildren(...projections.get(cell.dataset.serviceProjection).childNodes);
+    });
     $("#forecast-logic-example").innerHTML = forecastLogicExample(next, report);
   }
   function rescheduleTraining(id, targetMonth) {
@@ -749,7 +762,6 @@
     const input = event.target;
     if (input.matches("[data-service-growth]")) previewServiceGrowth(input, true);
     else if (input.dataset.trainingMonth) rescheduleTraining(input.dataset.trainingMonth, input.value);
-    else if (input.id === "planning-quick-service") {planningQuickService = input.value; render();}
     else if (input.id === "planning-month") {planningMonth = input.value; render();}
     else if (input.id === "planning-unit") {planningUnit = input.value; render();}
     else if (input.id === "planning-training") {
