@@ -63,10 +63,12 @@ rollup into monthly GPU requirements and SKU shortages. Open **Show the formulas
 and live calculation** to inspect the numbers; they update with the selected
 service, month, growth, and filters.
 
-- **Inference uses serving throughput**, benchmarked or entered for that model
-  and SKU at its response-time target. Convert each service's work into GPU
-  replicas separately, then add GPU counts. Do not add unlike services' request
-  rates and divide by one company-wide throughput number.
+- **Inference uses requests per second (RPS).** Demand is the incoming peak
+  request rate. Throughput is the RPS one GPU replica can serve for that model
+  and SKU at the required response time. Keep spare capacity, round up to
+  whole replicas, then multiply by GPUs per replica. Size each service
+  separately before adding GPU counts; do not divide combined service RPS
+  by one company-wide throughput number.
 - **Dense training uses model work and MFU**, plus a deadline, memory screen,
   topology rounding, and concurrent runs. Training throughput benchmark pairs
   serve the normalization index; they do not replace the MFU-based sizing math.
@@ -117,7 +119,7 @@ service, month, growth, and filters.
   with the updated example after confirmation.
 - **Inference demand by service** is visible directly below the bottom-up demand
   chart, without opening organization drill-downs. It lists every service name,
-  owning organization, exact SKU, current observed peak work/second, average
+  owning organization, exact SKU, current observed peak requests/second, average
   assigned GPUs, historical demand growth, and all six monthly GPU requirements.
   Service names remain visible while scrolling across the monthly columns.
 - Select a service name to see its observed daily demand and forecast GPU trend.
@@ -151,7 +153,7 @@ Choose **Benchmark pair** beside a service or training model and enter:
 - The evidence date, source, and configuration assumptions.
 
 For inference, the selected rate comes from the current serving profile.
-Use fixed work items per second per GPU, measured within a full replica at the
+Use requests per second per GPU (RPS/GPU), measured within a full replica at the
 required response time. For training, use training tokens per second per GPU
 under the same model configuration. Dividing a full replica's throughput by
 its GPU count does not mean the model fits on one GPU.
@@ -245,10 +247,10 @@ Public sources do not show how NVIDIA splits its own GPU usage across these
 areas, so this is not a spending ranking. The example's traffic, GPU counts,
 and performance inputs are illustrative planning data.
 
-For non-text services, a request means one fixed, benchmarked work item—for
+For non-text services, a request means one fixed, benchmarked operation—for
 example, a render, a video generation, or a policy evaluation. Request rates
 from different kinds of work are not interchangeable. The forecast converts
-each service's own work into GPUs before adding capacity requirements.
+each service's own request demand into GPUs before adding capacity requirements.
 
 The training examples are dense language-model experiments. The dense training
 formula below is not applied to every Cosmos, robotics, or simulation workload.
