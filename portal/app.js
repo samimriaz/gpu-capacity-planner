@@ -91,15 +91,22 @@
       return `<line class="grid-line" x1="${left}" y1="${y(n)}" x2="${w - right}" y2="${y(n)}"/><text x="${left - 10}" y="${y(n) + 3}" text-anchor="end">${compact(n)}</text>`;
     }).join("");
     const lines = series.map(s => {
-      let connected = false;
-      const path = points.map((p, i) => {
-        if (!Number.isFinite(p[s.key])) {connected = false; return "";}
-        const segment = `${connected ? "L" : "M"}${x(i)},${y(p[s.key])}`;
-        connected = true;
-        return segment;
-      }).join(" ");
-      return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2.5" ${s.dashed ? 'stroke-dasharray="6 5"' : ""}/>` +
-        points.map((p, i) => Number.isFinite(p[s.key]) ? `<circle cx="${x(i)}" cy="${y(p[s.key])}" r="${points.length < 10 ? 3 : 1.5}" fill="${s.color}"><title>${esc(p.date || p.month)} · ${esc(s.name)}: ${fmt(p[s.key], 1)}</title></circle>` : "").join("");
+      const segment = (start, end, forecast) => {
+        if (!points.slice(start, end).some(p => Number.isFinite(p[s.key]))) return "";
+        let connected = false;
+        const anchor = forecast && start > 0 && Number.isFinite(points[start - 1][s.key]) &&
+          Number.isFinite(points[start][s.key]) ? start - 1 : start;
+        const path = points.slice(anchor, end).map((p, offset) => {
+          if (!Number.isFinite(p[s.key])) {connected = false; return "";}
+          const command = `${connected ? "L" : "M"}${x(anchor + offset)},${y(p[s.key])}`;
+          connected = true;
+          return command;
+        }).join(" ");
+        return `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2.5" ${forecast ? 'stroke-dasharray="1 6" stroke-linecap="round"' : s.dashed ? 'stroke-dasharray="6 5"' : ""}/>`;
+      };
+      return segment(0, forecastStart ?? points.length, false) +
+        (forecastStart === null ? "" : segment(forecastStart, points.length, true)) +
+        points.map((p, i) => Number.isFinite(p[s.key]) ? `<circle cx="${x(i)}" cy="${y(p[s.key])}" r="${points.length < 10 ? 3 : 1.5}" fill="${s.color}"><title>${esc(p.date || p.month)} · ${esc(forecastStart !== null && i < forecastStart ? (s.historyName ?? s.name) : s.name)}: ${fmt(p[s.key], 1)}</title></circle>` : "").join("");
     }).join("");
     const labels = (forecastStart !== null ? points.map((_, i) => i) : [...new Set([0, Math.floor(points.length / 2), points.length - 1])]).map(i =>
       `<text x="${x(i)}" y="${h - 9}" text-anchor="middle">${esc(points[i].date || points[i].month)}</text>`).join("");
@@ -154,7 +161,7 @@
       return `<tr><td>${esc(s.name)}</td><td>${s.demandMethod === "drivers" ? "DAU × sessions × requests × calls × cache misses × peak ratio" : "Recorded peak × compounded annual traffic growth"}</td><td>${fmt(e.organicRps, 1)}</td><td>${fmt(e.launchRps, 1)}</td><td>${fmt(e.peakRps, 1)}</td><td>${esc(e.available ? "Scenario inputs available" : e.reason)}</td></tr>`;
     }).join("");
     return `<div class="callout info">The chart here is a manual scenario using entered annual growth or user-based inputs. <strong>Capacity forecast learns its own traffic trend.</strong> Launch and performance inputs here are shared with that forecast; annual growth only drives this manual chart or a user-based service plan. ${incomplete ? "<strong>Some service inputs are missing.</strong>" : ""} <button class="text-button" data-view="capacity">Open capacity forecast</button></div>
-      <section class="panel"><div class="panel-heading"><div><h2>Manual serving scenario</h2><p>Compare an entered growth assumption with the history-based forecast.</p></div></div><div class="chart-wrap">${chart(projection, [{key: "gpus", name: "Inference GPUs", color: "var(--blue)"}], "Monthly manual serving GPU scenario")}</div></section>
+      <section class="panel"><div class="panel-heading"><div><h2>Manual serving scenario</h2><p>Compare an entered growth assumption with the history-based forecast. The dotted line shows future requirements.</p></div></div><div class="chart-wrap">${chart(projection, [{key: "gpus", name: "Inference GPUs", color: "var(--blue)"}], "Monthly manual serving GPU scenario", 0)}</div></section>
       <section class="panel"><div class="panel-heading"><div><h2>Service performance & growth profiles</h2><p>Configure demand method, drivers, configuration key, token mix and optional reusable benchmark.</p></div></div>${table(["Service", "GPU SKU", "Baseline peak RPS", "Demand method", "Replica profile", months[0], months[5], ""], rows)}</section>
       <section class="panel"><div class="panel-heading"><div><h2>Month-six demand decomposition</h2><p>Organic demand and named launch increments are separate to prevent double counting.</p></div></div>${table(["Service", "Organic demand logic", "Organic peak RPS", "Launch RPS", "Total peak RPS", "Input status"], decomposition)}</section>
       <section class="panel"><div class="panel-heading"><h2>Calculation contract</h2></div><div class="panel-body description"><strong>Historical mode:</strong> baseline peak × (1 + annual traffic growth)^(months / 12).<br><strong>Driver mode:</strong> daily active users × compounded user growth × sessions/user/day × requests/session × backend calls/request × (1 − cache hit fraction) × peak-to-average ratio / 86,400.<br>Add cumulative launch RPS once, after either organic calculation. The two demand methods are alternatives, not additive.<br><strong>Replicas</strong> = ceil(peak RPS / (1 − spare headroom fraction) / sustainable RPS per replica).<br><strong>GPUs</strong> = replicas × GPUs per replica. Selected library profiles must match the pool, workload key and token range; there is no silent fallback to inline throughput.<br>One-day backtests in Forecast evidence do not validate or replace these six-month scenarios. Queueing, memory/KV-cache fit and statistical uncertainty remain unmodeled.</div></section>`;
@@ -299,7 +306,7 @@
       trend = `<section class="panel" id="service-demand-trend" aria-labelledby="service-demand-trend-title"><div class="panel-heading"><div><h2 id="service-demand-trend-title">Service trend: ${esc(selected.name)}</h2><p>${esc(skuName(selected.pool))}. Select another service name above to inspect its history and forecast without hiding other services.</p></div></div>
         <div class="service-trend-grid"><div><h3>Observed daily demand</h3><p class="help">${current ? `Last 56 calendar days through ${current.end}. Missing observations stay blank.` : "No recorded history. An entered demand plan can still produce a forecast."}</p>
         ${chart(selected.history.observations, [{key: "peakRps", name: "Observed daily peak work/second", color: "var(--history)"}], `${selected.name}: observed daily peak work per second`)}</div>
-        <div><h3>Forecast GPU requirement</h3><p class="help">Physical GPUs needed at each month's predicted peak. This is inference only; training is added separately.</p>
+        <div><h3>Forecast GPU requirement</h3><p class="help">The dotted line shows physical GPUs needed at each month's predicted peak. This is inference only; training is added separately.</p>
         ${chart(selected.monthly, [{key: "gpus", name: "Required inference GPUs", color: "var(--accent)"}], `${selected.name}: monthly GPU requirement`, 0)}</div></div></section>`;
     }
     return `<section class="panel service-demand" id="inference-service-demand" aria-labelledby="inference-service-demand-title"><div class="panel-heading"><div><h2 id="inference-service-demand-title">Inference demand by service</h2><p>${services.length ? "Edit growth beside each service's usage. Drag its slider or enter a percentage; release the slider or leave the number field to save. Extra demand compounds to the entered percentage by month six, on top of the learned trend; +0% keeps that trend. Launch traffic is added separately." : "No inference service matches these filters. The training roadmap remains available below."}</p></div></div>
@@ -316,8 +323,14 @@
         rows.reduce((n, r) => n + r.normalizedGpus, 0) : rows.some(r => r.gpus === null) ? null :
         rows.reduce((n, r) => n + r.gpus, 0);
     };
-    const points = report.monthly.map(m => ({month: m.month, inference: subtotal(m, "inference"),
-      training: subtotal(m, "training"), total: normalized ? m.normalizedRequired : m.physicalComplete ? m.required : null}));
+    const points = [...report.historical.map(m => ({month: m.month, total: normalized ? null : m.actual})),
+      ...report.monthly.map(m => ({month: m.month, inference: subtotal(m, "inference"),
+        training: subtotal(m, "training"), total: normalized ? m.normalizedRequired : m.physicalComplete ? m.required : null}))];
+    const historyNote = normalized ?
+      "Historical assignments are recorded in physical GPUs, not H100 equivalents. Choose Physical GPUs to see the recorded trend." :
+      report.historical.length ?
+        "The solid history continues directly into the dotted total forecast, in the same color. History shows highest daily assignments on recorded days; the forecast shows capacity requirements. Historical training usage is not recorded separately." :
+        "No recorded service history matches these filters. Only the dotted forecast is shown.";
     const growth = first.normalizedRequired !== null && last.normalizedRequired !== null ?
       M.growth(last.normalizedRequired, first.normalizedRequired) : null;
     const partial = focused.missing ? `<div class="callout">${focused.missing} workload(s) lack usable normalization evidence.
@@ -334,7 +347,7 @@
     const selected = workspace.services.find(s => s.id === serviceFilter);
     const detail = selected ? `<section class="panel"><div class="panel-heading"><h2>${esc(selected.name)}: model assumptions</h2><button class="button subtle" data-edit-service="${esc(selected.id)}">Edit model inputs</button></div><div class="panel-body description">${esc(selected.profile)}<br>Configuration: ${esc(selected.workloadKey)}. Input / output tokens: ${fmt(selected.inputTokens)} / ${fmt(selected.outputTokens)}. Extra demand by month six: ${pct(selected.scenarioGrowthPct ?? 0)}.<br>H100 equivalents compare this workload only. Divide its equivalent count by its own benchmark ratio to recover its assigned-SKU GPU count; replica rounding has already been applied.</div></section>` : "";
     return `<div id="planning-summary"><div class="kpis">${metric(`GPUs required in ${focused.month}`, fmt(focused.required), focused.physicalComplete ? "Inference plus scheduled training; see SKU split below" : "Partial physical demand: missing sizing inputs", true)}${metric("H100-equivalent requirement", fmt(focused.normalizedRequired, 1), `${focused.count - focused.missing} / ${focused.count} workloads covered; a comparison index`)}${metric("Normalized growth: month 1 to 6", pct(growth), "Same reference SKU, workload-specific ratios")}${metric("Training in selected month", fmt(focused.training), "Added on top of service demand")}</div>${partial}
-      <section class="panel"><div class="panel-heading"><div><h2>Bottom-up demand: inference + training</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Inference</span><span><i class="amber"></i>Training</span><span><i class="blue"></i>Total</span></div></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference", color: "var(--accent)"}, {key: "training", name: "Training", color: "var(--amber)"}, {key: "total", name: "Inference + training", color: "var(--blue)"}], normalized ? "H100-equivalent demand by month" : "Physical GPU demand by month", 0)}</div></section>
+      <section class="panel" id="bottom-up-demand-chart"><div class="panel-heading"><div><h2>Bottom-up demand: history + forecast</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend">${normalized ? "" : '<span><i class="trend-key blue"></i>Recorded service assignments</span>'}<span><i class="trend-key forecast-key"></i>Inference forecast</span><span><i class="trend-key forecast-key amber"></i>Training plan</span><span><i class="trend-key forecast-key blue"></i>Total forecast</span></div><p class="help">${historyNote} Missing observations stay blank.</p></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference forecast", color: "var(--accent)"}, {key: "training", name: "Training plan", color: "var(--amber)"}, {key: "total", name: "Total forecast: inference + training", historyName: "Recorded service assignments (monthly maximum)", color: "var(--blue)"}], normalized ? "H100-equivalent capacity forecast by month; physical history unavailable on this scale" : "Recorded monthly GPU assignments continuing into a dotted total capacity forecast, with inference and training forecasts", report.historical.length)}</div></section>
       </div>${inferenceServiceDemand(workspace, report)}<div id="planning-rollups">${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section></div>`;
   }
   function planningView() {
@@ -402,7 +415,7 @@
     const firstGap = rows.find(r => r.gap > 0);
     const ready = forecast.services.filter(e => e.available).length;
     const complete = ready === forecast.services.length && ready > 0;
-    const points = [...forecast.historical, ...forecast.monthly.map(m => ({month: m.month,
+    const points = [...forecast.historical.map(m => ({...m, planned: m.actual})), ...forecast.monthly.map(m => ({month: m.month,
       baseline: m.complete && ready ? m.baselineRequired : null, planned: m.complete && ready ? m.required : null, usable: m.usable}))];
     const historyCount = forecast.services.filter(e => e.demand.source === "history").length;
     const names = {linear_trend: "Learned weekly trend", recent_average: "Recent average + weekday pattern", drivers: "Entered user plan"};
@@ -414,8 +427,8 @@
       <div class="kpis">${metric(`GPUs needed in ${last.month}`, ready ? fmt(last.required) : "Not available", complete ? "With your plans and adjustments" : "Partial estimate - check service coverage", true)}${metric("Change from base forecast", ready ? pct(M.growth(last.required, last.baselineRequired)) : "Not available", "Traffic changes, serving improvements and training")}${metric("First SKU shortage", firstGap ? firstGap.month : complete ? "None forecast" : "Unknown", firstGap ? `${skuName(firstGap.pool)}: ${fmt(firstGap.gap)} GPUs short${!firstGap.complete ? " (partial demand)" : ""}` : "Check each GPU SKU, not just the fleet total")}${metric("Services forecast", `${ready} / ${forecast.services.length}`, complete ? "All selected services have sizing inputs" : "Missing history or performance evidence")}</div>
       ${!complete ? '<div class="callout">Some services cannot be forecast. Known demand remains in the table; incomplete totals are not plotted as a complete forecast. Add history or explicitly configure a user-based plan.</div>' : ""}
       <div class="forecast-layout"><section class="panel forecast-main"><div class="panel-heading"><div><h2>GPU demand forecast</h2><p>See how your plans change the forecast over the next six months.</p></div><span class="badge">${state.startMonth} to ${last.month}</span></div>
-        <div class="panel-body"><div class="legend"><span><i class="gray"></i>Historical assigned GPUs</span><span><i></i>Base serving forecast</span><span><i class="blue"></i>With my plans</span><span><i class="amber"></i>Available GPUs</span></div></div>
-        <div class="chart-wrap">${chart(points, [{key: "actual", name: "Historical daily assigned GPUs (monthly maximum)", color: "var(--history)"}, {key: "baseline", name: "Base serving forecast", color: "var(--accent)"}, {key: "planned", name: "With my plans", color: "var(--blue)"}, {key: "usable", name: "Available GPUs", color: "var(--amber)", dashed: true}], "Historical GPU assignments and six-month demand forecast", forecast.historical.length)}</div>
+        <div class="panel-body"><div class="legend"><span><i class="trend-key blue"></i>Historical assigned GPUs</span><span><i class="trend-key forecast-key"></i>Base serving forecast</span><span><i class="trend-key forecast-key blue"></i>With my plans</span><span><i class="trend-key forecast-key amber"></i>Available GPUs (planned)</span></div></div>
+        <div class="chart-wrap">${chart(points, [{key: "baseline", name: "Base serving forecast", color: "var(--accent)"}, {key: "planned", name: "With my plans", historyName: "Historical daily assigned GPUs (monthly maximum)", color: "var(--blue)"}, {key: "usable", name: "Available GPUs", color: "var(--amber)", dashed: true}], "Historical GPU assignments continuing into a dotted six-month demand forecast", forecast.historical.length)}</div>
         <div class="panel-body description">History shows the highest daily average assigned GPUs in each observed month. Future demand uses the busiest predicted day, converted through each service's serving performance. Training appears in the plan, not the base serving line. Pool shortages below take priority over the fleet total.</div></section>
       <section class="panel forecast-controls"><div class="panel-heading"><div><h2>Adjust the forecast</h2><p>Workspace-wide changes, applied to selected views.</p></div></div><form id="forecast-controls" class="panel-body">
         <label>Traffic above / below forecast (%)<input name="trafficAdjustmentPct" type="number" min="-90" max="300" step="any" value="${options.trafficAdjustmentPct}" required><span class="help">+20 means 20% more traffic than the learned forecast.</span></label>

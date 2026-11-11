@@ -90,6 +90,15 @@ service, month, growth, and filters.
 - Turn **Include training** off to compare inference-only demand. Training
   plans remain editable and are not deleted.
 - Choose **Inspect month** to see that month's organization and SKU totals.
+- The bottom-up chart shows recorded GPU assignments as a **solid historical
+  trend that connects directly to the dotted total forecast**, in the same
+  color. The dotted portion starts at the final historical point and continues
+  through the forecast months. Inference and training forecasts are also dotted.
+  The forecast boundary marks where the six-month plan begins. History shows
+  the highest daily assignment on recorded days in each observed month; it is
+  not a measurement of future capacity needs or a separate training-usage
+  history. Missing observations stay blank. Historical assignments are recorded
+  in physical GPUs; the H100-equivalent view does not guess historical ratios.
 - **Inference demand by service** is visible directly below the bottom-up demand
   chart, without opening organization drill-downs. It lists every service name,
   owning organization, exact SKU, current observed peak work/second, average
