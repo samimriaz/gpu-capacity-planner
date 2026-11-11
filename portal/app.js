@@ -278,6 +278,32 @@
         <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
       </details></section>`;
   }
+  function inferenceServiceDemand(report) {
+    const services = report.inferenceServices;
+    const months = report.monthly.map(m => m.month);
+    const rows = services.map(s => {
+      const current = s.history.current;
+      return `<tr data-model-row="${esc(s.id)}"><td><button class="text-button service-name" data-service-trend="${esc(s.id)}">${esc(s.name)}</button><span class="subtext">${esc(s.team)}<br>${esc(skuName(s.pool))}</span></td>
+        <td>${fmt(current?.peakRps, 2)}<span class="subtext">${current ? `Through ${current.end}; ${current.days}/28 days observed` : esc(s.history.observedGrowthReason)}</span></td>
+        <td>${fmt(current?.averageAllocated, 1)}</td><td>${pct(s.history.observedGrowthPct)}<span class="subtext">${esc(s.history.observedGrowthReason || "Recent 28-day peak vs previous 28-day peak")}</span></td>
+        ${s.monthly.map(m => `<td>${fmt(m.gpus)}${m.reason ? `<span class="subtext">${esc(m.reason)}</span>` : ""}</td>`).join("")}
+        <td>${pct(s.forecastGrowthPct)}<span class="subtext">${esc(s.forecastGrowthReason || "Planning month 1 to 6")}</span></td>
+        <td><button class="text-button" data-drill-service="${esc(s.id)}">Open model</button></td></tr>`;
+    }).join("");
+    const selected = services.find(s => s.id === planningQuickService) || services[0];
+    let trend = "";
+    if (selected) {
+      const current = selected.history.current;
+      trend = `<section class="panel" id="service-demand-trend" aria-labelledby="service-demand-trend-title"><div class="panel-heading"><div><h2 id="service-demand-trend-title">Service trend: ${esc(selected.name)}</h2><p>${esc(skuName(selected.pool))}. Select another service name above to inspect its history and forecast without hiding other services.</p></div></div>
+        <div class="service-trend-grid"><div><h3>Observed daily demand</h3><p class="help">${current ? `Last 56 calendar days through ${current.end}. Missing observations stay blank.` : "No recorded history. An entered demand plan can still produce a forecast."}</p>
+        ${chart(selected.history.observations, [{key: "peakRps", name: "Observed daily peak work/second", color: "#a7b3c5"}], `${selected.name}: observed daily peak work per second`)}</div>
+        <div><h3>Forecast GPU requirement</h3><p class="help">Physical GPUs needed at each month's predicted peak. This is inference only; training is added separately.</p>
+        ${chart(selected.monthly, [{key: "gpus", name: "Required inference GPUs", color: "#b7ef6a"}], `${selected.name}: monthly GPU requirement`, 0)}</div></div></section>`;
+    }
+    return `<section class="panel service-demand" id="inference-service-demand" aria-labelledby="inference-service-demand-title"><div class="panel-heading"><div><h2 id="inference-service-demand-title">Inference demand by service</h2><p>Service names, observed demand, historical growth and every forecast month. Select a service name for its trend, or double-click its row to open the model.</p></div></div>
+      <p class="panel-body description">Current demand is the peak work/second in the latest observed 28-day window before planning starts, not live traffic. Assigned GPUs are an observed average, not the forecast requirement. Historical growth compares complete 28-day peak-demand windows; forecast growth compares month-one and month-six GPU requirements. Scroll right for all months; service names stay visible.</p>
+      ${table(["Service / organization / SKU", "Current peak work/s", "Assigned GPUs (28-day avg)", "Historical demand growth", ...months.map(m => `${m} GPUs`), "Forecast GPU growth", ""], rows)}</section>${trend}`;
+  }
   function planningResults(workspace, report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter)) {
     const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
     const first = report.monthly[0], last = report.monthly.at(-1);
@@ -307,7 +333,7 @@
     const detail = selected ? `<section class="panel"><div class="panel-heading"><h2>${esc(selected.name)}: model assumptions</h2><button class="button subtle" data-edit-service="${esc(selected.id)}">Edit model inputs</button></div><div class="panel-body description">${esc(selected.profile)}<br>Configuration: ${esc(selected.workloadKey)}. Input / output tokens: ${fmt(selected.inputTokens)} / ${fmt(selected.outputTokens)}. Extra demand by month six: ${pct(selected.scenarioGrowthPct ?? 0)}.<br>H100 equivalents compare this workload only. Divide its equivalent count by its own benchmark ratio to recover its assigned-SKU GPU count; replica rounding has already been applied.</div></section>` : "";
     return `<div class="kpis">${metric(`GPUs required in ${focused.month}`, fmt(focused.required), focused.physicalComplete ? "Inference plus scheduled training; see SKU split below" : "Partial physical demand: missing sizing inputs", true)}${metric("H100-equivalent requirement", fmt(focused.normalizedRequired, 1), `${focused.count - focused.missing} / ${focused.count} workloads covered; a comparison index`)}${metric("Normalized growth: month 1 to 6", pct(growth), "Same reference SKU, workload-specific ratios")}${metric("Training in selected month", fmt(focused.training), "Added on top of service demand")}</div>${partial}
       <section class="panel"><div class="panel-heading"><div><h2>Bottom-up demand: inference + training</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Inference</span><span><i class="amber"></i>Training</span><span><i class="blue"></i>Total</span></div></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference", color: "#b7ef6a"}, {key: "training", name: "Training", color: "#f2bd6d"}, {key: "total", name: "Inference + training", color: "#8daaff"}], normalized ? "H100-equivalent demand by month" : "Physical GPU demand by month", 0)}</div></section>
-      ${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section>`;
+      ${inferenceServiceDemand(report)}${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section>`;
   }
   function planningView() {
     const horizon = M.months(state.startMonth);
@@ -642,6 +668,10 @@
     const button = event.target.closest("button");
     if (!button) return;
     if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; render();}
+    else if (button.dataset.serviceTrend) {
+      planningQuickService = button.dataset.serviceTrend; render();
+      $("#service-demand-trend").scrollIntoView({block: "nearest"});
+    }
     else if (button.dataset.drillOrg) {teamFilter = button.dataset.drillOrg; serviceFilter = "all"; render();}
     else if (button.dataset.drillService) {serviceFilter = button.dataset.drillService; render();}
     else if (button.dataset.calibrateKind) openEditor(`normalize-${button.dataset.calibrateKind}`, button.dataset.calibrateId);

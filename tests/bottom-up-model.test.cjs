@@ -10,6 +10,93 @@ function pair(state, item, kind, ratio) {
     evidence: "Same workload and precision on both SKUs; per-GPU rates from full model replicas."};
 }
 
+function replaceHistory(state, id, previousPeak, currentPeak) {
+  state.records = state.records.filter(r => r.serviceId !== id);
+  for (let day = 0; day < 56; day++) {
+    const date = new Date(Date.UTC(2026, 8, 15) + day * 86400000).toISOString().slice(0, 10);
+    state.records.push({serviceId: id, date, peakRps: day < 28 ? previousPeak : currentPeak,
+      gpuHours: 8 * 24, activity: 60, requests: 0, source: "synthetic"});
+  }
+}
+
+test("service rows expose names, current observed demand and all monthly GPU estimates", () => {
+  const state = M.demo(), report = M.bottomUpForecast(state);
+  assert.equal(report.inferenceServices.length, 7);
+  for (const service of report.inferenceServices) {
+    assert.equal(service.name, state.services.find(s => s.id === service.id).name);
+    assert.deepEqual(service.history.current, M.baseline(state, service.id));
+    assert.equal(service.monthly.length, 6);
+  }
+  for (const [i, month] of report.monthly.entries()) {
+    assert.equal(report.inferenceServices.reduce((n, s) => n + s.monthly[i].gpus, 0), month.inference);
+  }
+});
+
+test("historical growth compares complete 28-day peak-demand windows, not assigned GPUs", () => {
+  const state = M.demo();
+  replaceHistory(state, "assistant", 10, 20);
+  const history = M.serviceDemandHistory(state, "assistant");
+  assert.equal(history.current.peakRps, 20);
+  assert.equal(history.current.averageAllocated, 8);
+  assert.equal(history.previousPeakRps, 10);
+  assert.equal(history.observedGrowthPct, 100);
+  assert.equal(history.currentStart, "2026-10-13");
+  assert.equal(history.previousEnd, "2026-10-12");
+  assert.equal(history.observations.length, 56);
+});
+
+test("missing history is unavailable for growth and remains a gap rather than an observed zero", () => {
+  const state = M.demo();
+  replaceHistory(state, "assistant", 10, 20);
+  state.records = state.records.filter(r => r.serviceId !== "assistant" || r.date !== "2026-09-20");
+  const history = M.serviceDemandHistory(state, "assistant");
+  assert.equal(history.observedGrowthPct, null);
+  assert.match(history.observedGrowthReason, /previous 27\/28/);
+  assert.equal(history.observations.find(r => r.date === "2026-09-20").peakRps, null);
+  assert.equal(history.current.days, 28);
+});
+
+test("zero historical baselines and declining demand have explicit, distinct growth results", () => {
+  const state = M.demo();
+  replaceHistory(state, "assistant", 0, 20);
+  assert.equal(M.serviceDemandHistory(state, "assistant").observedGrowthPct, null);
+  assert.match(M.serviceDemandHistory(state, "assistant").observedGrowthReason, /previous 28-day peak is zero/);
+  replaceHistory(state, "assistant", 10, 0);
+  assert.equal(M.serviceDemandHistory(state, "assistant").observedGrowthPct, -100);
+});
+
+test("post-plan observations do not leak into current demand or historical growth", () => {
+  const state = M.demo(), before = M.serviceDemandHistory(state, "assistant");
+  state.records.push({...state.records.find(r => r.serviceId === "assistant"), date: "2026-12-01", peakRps: 1e9});
+  assert.deepEqual(M.serviceDemandHistory(state, "assistant"), before);
+  assert.throws(() => M.serviceDemandHistory(state, "unknown-service"), /existing service/);
+});
+
+test("new services can have forecast demand without invented current usage or historical growth", () => {
+  const state = M.demo();
+  state.records = state.records.filter(r => r.serviceId !== "assistant");
+  state.services[0].demandMethod = "drivers";
+  const row = M.bottomUpForecast(state).inferenceServices.find(s => s.id === "assistant");
+  assert.equal(row.history.current, null);
+  assert.equal(row.history.observedGrowthPct, null);
+  assert.deepEqual(row.history.observations, []);
+  assert.ok(row.monthly.every(m => m.gpus > 0));
+});
+
+test("service forecasts respond to growth adjustments, preserve historical data and respect filters", () => {
+  const state = M.demo(), before = M.bottomUpForecast(state).inferenceServices.find(s => s.id === "assistant");
+  state.services[0].scenarioGrowthPct = 100;
+  const report = M.bottomUpForecast(state, "assistant");
+  const after = report.inferenceServices[0];
+  assert.equal(report.inferenceServices.length, 1);
+  assert.deepEqual(after.history, before.history);
+  assert.equal(after.monthly[5].peakRps, before.monthly[5].peakRps * 2);
+  assert.ok(after.forecastGrowthPct > before.forecastGrowthPct);
+  const trainingOnly = M.bottomUpForecast(state, "all", "Chip Design Research", "B200-SXM-180GB");
+  assert.deepEqual(trainingOnly.inferenceServices, []);
+  assert.ok(trainingOnly.monthly.some(m => m.training > 0));
+});
+
 test("per-service six-month growth compounds on the learned base and leaves other services unchanged", () => {
   const state = M.demo(), before = M.capacityForecast(state);
   state.services[0].scenarioGrowthPct = 100;

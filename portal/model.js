@@ -229,6 +229,30 @@
       days: selected.length, end,
     };
   }
+  function serviceDemandHistory(state, id) {
+    if (!state.services.some(s => s.id === id)) fail("Choose an existing service for demand history.");
+    const current = baseline(state, id);
+    if (!current) return {current: null, currentStart: null, previousStart: null, previousEnd: null,
+      previousDays: 0, previousPeakRps: null, observedGrowthPct: null,
+      observedGrowthReason: "No consumption observations before planning starts.", observations: []};
+    const end = Date.parse(current.end);
+    const stamp = offset => new Date(end - offset * DAY).toISOString().slice(0, 10);
+    const byDate = new Map(state.records.filter(r => r.serviceId === id && r.date >= stamp(55) && r.date <= current.end)
+      .map(r => [r.date, r]));
+    const observations = Array.from({length: 56}, (_, i) => {
+      const date = stamp(55 - i);
+      return {date, peakRps: byDate.get(date)?.peakRps ?? null};
+    });
+    const previous = observations.slice(0, 28).filter(r => r.peakRps !== null);
+    const previousPeakRps = previous.length ? Math.max(...previous.map(r => r.peakRps)) : null;
+    const complete = current.days === 28 && previous.length === 28;
+    const observedGrowthPct = complete ? growth(current.peakRps, previousPeakRps) : null;
+    return {current, currentStart: stamp(27), previousStart: stamp(55), previousEnd: stamp(28),
+      previousDays: previous.length, previousPeakRps, observedGrowthPct,
+      observedGrowthReason: !complete ? `Need two complete 28-day windows: recent ${current.days}/28 days; previous ${previous.length}/28 days.` :
+        previousPeakRps === 0 ? "The previous 28-day peak is zero; percentage growth is unavailable." : "",
+      observations};
+  }
   function inference(state, service, index) {
     const base = baseline(state, service.id);
     if (service.demandMethod === "historical" && !base) return {available: false, reason: "No consumption baseline; enter daily data.", gpus: null, peakRps: null};
@@ -523,7 +547,22 @@
         })),
         pools: m.pools.map(p => ({...p, ...summarize(workloads.filter(r => r.pool === p.pool)), missing: p.missing}))};
     });
-    return {...forecast, referenceSku: NORMALIZATION_REFERENCE, monthly: horizon};
+    const inferenceServices = forecast.services.map(e => {
+      const monthly = horizon.map(m => {
+        const row = m.workloads.find(r => r.kind === "inference" && r.id === e.service.id);
+        const estimate = m.pools.flatMap(p => p.estimates).find(r => r.serviceId === e.service.id);
+        return {month: m.month, gpus: row?.gpus ?? null,
+          peakRps: Number.isSafeInteger(row?.gpus) && estimate?.available ? estimate.peakRps : null,
+          reason: row?.gpus === null ? row.reason : ""};
+      });
+      const complete = monthly.every(m => m.gpus !== null);
+      return {id: e.service.id, name: e.service.name, team: e.service.team, pool: e.service.pool,
+        history: serviceDemandHistory(state, e.service.id), monthly,
+        forecastGrowthPct: complete ? growth(monthly.at(-1).gpus, monthly[0].gpus) : null,
+        forecastGrowthReason: !complete ? "Some months lack usable sizing inputs." :
+          monthly[0].gpus === 0 ? "Month-one GPU requirement is zero; percentage growth is unavailable." : ""};
+    });
+    return {...forecast, referenceSku: NORMALIZATION_REFERENCE, monthly: horizon, inferenceServices};
   }
   function moveTraining(state, id, targetMonth) {
     month(targetMonth);
@@ -661,7 +700,7 @@
   }
   const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
-    normalizationKey, normalizationFor, bottomUpForecast, moveTraining, training, portfolio, comparePeriods, demo};
+    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, moveTraining, training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

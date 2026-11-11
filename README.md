@@ -84,6 +84,18 @@ service, month, growth, and filters.
 - Turn **Include training** off to compare inference-only demand. Training
   plans remain editable and are not deleted.
 - Choose **Inspect month** to see that month's organization and SKU totals.
+- **Inference demand by service** is visible directly below the bottom-up demand
+  chart, without opening organization drill-downs. It lists every service name,
+  owning organization, exact SKU, current observed peak work/second, average
+  assigned GPUs, historical demand growth, and all six monthly GPU requirements.
+  Service names remain visible while scrolling across the monthly columns.
+- Select a service name to see its observed daily demand and forecast GPU trend.
+  Historical growth compares the latest complete 28-day peak-demand window with
+  the preceding 28 days; missing coverage or a zero earlier peak makes it
+  unavailable. Forecast GPU growth compares planning month one with month six.
+  These are separate measures, not a comparison of average usage with peak
+  capacity. Observation dates are shown so older data is not mistaken for live
+  demand. The scenario JSON export includes these per-service series.
 - Double-click an organization row, or use **Open models**, to see its
   inference services and scheduled training models. Open an inference model
   to see its configuration and assumptions; open a training model to edit its
