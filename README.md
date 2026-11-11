@@ -18,8 +18,10 @@ It helps them understand:
 - What new models teams plan to train.
 - Whether available GPUs can cover those needs.
 
-The main screen separates **the base forecast** from **the forecast with your
-plans**. You can see what changed and when each GPU type runs short.
+The Capacity forecast screen separates **the base forecast** from **the forecast with your
+plans**. The **Scenario planner** adds hands-on controls: change a service's
+growth, move training between months, and see the company requirement change.
+You can inspect both physical GPUs by SKU and a common H100-equivalent index.
 
 The portal runs in your browser and includes a sample 200,000-GPU inventory
 and service history.
@@ -32,6 +34,97 @@ and service history.
 [Screenshots](#screenshots) |
 [Run locally](#run-the-portal) |
 [Limitations](#what-it-does-not-do-yet)
+
+## Build the plan from the bottom up
+
+The starting point is each service, not a company-wide GPU growth target:
+
+1. Learn the service's future traffic from its history, or use its entered
+   business-demand plan.
+2. Convert that work into GPUs using its selected SKU and serving profile.
+3. Let the planner add extra growth for that service.
+4. Add training runs in the months they are scheduled.
+5. Add those requirements by organization and SKU.
+6. Compare the SKU requirements with inventory. Also show H100 equivalents
+   so changes in hardware mix do not look like changes in equal-performance
+   GPU counts.
+
+### Change inputs and see the result
+
+Open **Scenario planner**, the default page:
+
+- Choose a service under **Set service growth**. Drag the slider or type a
+  percentage. Results preview immediately; release the slider or leave the
+  number field to save.
+- **+50% means 50% extra demand by month six**, on top of the traffic forecast.
+  The increase compounds across six months, so month one gets a smaller
+  increase. It is not a flat increase in every month or a replacement for the
+  learned trend.
+- Drag a training card to another month. A month selector provides the same
+  action without dragging. Active run days stay unchanged; a 31-day run cannot
+  move into February.
+- Turn **Include training** off to compare inference-only demand. Training
+  plans remain editable and are not deleted.
+- Choose **Inspect month** to see that month's organization and SKU totals.
+- Double-click an organization row, or use **Open models**, to see its
+  inference services and scheduled training models. Open an inference model
+  to see its configuration and assumptions; open a training model to edit its
+  parameters, tokens, timing, and hardware.
+
+The existing service-owning team is used as the organization. Global service,
+organization and SKU filters apply to the planner. Training is filtered by its
+own GPU SKU, even if its owning service uses a different SKU for inference.
+Existing saved workspaces keep their inputs.
+
+### Compare unlike GPUs without inventing an exchange rate
+
+There is no universal rule such as **10 H100 = 1 GB200**. The result depends on
+the model, precision, memory needs, software and response-time target. GB200
+is also a CPU-plus-two-GPU superchip, not a single GPU.
+
+The common unit here is **one H100 SXM 80GB GPU for the same workload**.
+Choose **Benchmark pair** beside a service or training model and enter:
+
+- Throughput per selected-SKU GPU.
+- Throughput per H100 SXM GPU for the same workload.
+- The evidence date, source, and configuration assumptions.
+
+For inference, the selected rate comes from the current serving profile.
+Use fixed work items per second per GPU, measured within a full replica at the
+required response time. For training, use training tokens per second per GPU
+under the same model configuration. Dividing a full replica's throughput by
+its GPU count does not mean the model fits on one GPU.
+
+```text
+Workload ratio = selected-SKU throughput per GPU / H100 throughput per GPU
+H100 equivalents = required selected-SKU GPUs * workload ratio
+Assigned-SKU GPUs = H100 equivalents / that same workload ratio
+```
+
+For example, if a workload runs at twice the throughput per GPU on its selected
+SKU, 100 of those GPUs represent 200 H100 equivalents. Another workload on that
+same SKU can have a different ratio. The example pairs in the demo are explicitly
+illustrative, not measured performance.
+
+The planner sums these workload-specific equivalents and reports growth from
+**planning month one to planning month six**. Training contributes wherever it
+is scheduled, including those endpoints. Switch **Chart units** to compare the
+normalized curve with the physical GPU curve.
+
+The final hardware table retains each workload's assigned SKU and replica
+rounding. It does not choose a new mix, move jobs, or treat normalized demand as
+interchangeable supply. Inventory and shortages remain exact-SKU counts.
+
+Missing benchmark pairs make normalized totals **unavailable**, with a clearly
+labeled known subtotal. Changed model settings, changed serving throughput,
+and future-dated evidence invalidate a pair instead of silently reusing it.
+Physical requirements remain visible. Moving an unchanged training run between
+valid months does not invalidate its pair.
+
+Scenario JSON includes workload rows, organization rollups, SKU totals and
+normalization evidence. Monthly CSV includes physical requirements, H100
+equivalents and missing-calibration counts. Service growth and benchmark pairs
+also persist in workspace JSON; older workspaces need no guessed benchmark data.
 
 ## Does it account for the GPU SKU?
 
@@ -112,8 +205,11 @@ flowchart TD
     Growth["Users adjust traffic, launches and serving performance"] --> Serving
     Tests["Performance tests: requests each GPU group can handle"] --> Serving
     Plans["Teams enter model training plans"] --> Training["Estimate GPUs needed for training"]
-    Serving --> Total["Add requirements by month and GPU type"]
+    LocalGrowth["Per-service growth slider"] --> Serving
+    Serving --> Total["Add requirements by month, organization and GPU SKU"]
     Training --> Total
+    Total --> Normalize["Workload benchmark pairs: H100-equivalent comparison"]
+    Normalize --> GrowthReport["Compare normalized growth; retain assigned SKU counts"]
     Inventory["Available GPUs and planned additions"] --> Compare["Compare demand with supply"]
     Total --> Compare
     Compare --> Review["Review shortages and change the plan"]
@@ -181,8 +277,9 @@ live updates and historical ownership tracking are not.
 The data tells us what happened. Teams still need to tell us what they intend
 to do next.
 
-1. **Open Capacity forecast.** It starts with a six-month prediction learned
-   from service history. Filter by service, team, or GPU SKU.
+1. **Open Scenario planner.** It starts with a six-month prediction learned
+   from service history. Adjust service growth and drill into an organization
+   or model. Filter by service, organization, or GPU SKU.
 2. **Adjust the prediction.** Enter traffic above or below the forecast, or a
    change in serving throughput. Click **Update forecast** to save and compare.
    The base forecast stays unchanged.
@@ -254,6 +351,9 @@ not measure accuracy six months ahead.
 - **Include training:** add the training roadmap to the serving requirement.
 
 Adjustments apply across the workspace and are saved with it.
+The Scenario planner also applies each service's extra growth:
+`(1 + growth / 100) ^ (planning month number / 6)`.
+That factor affects organic demand, before launches are added.
 The base serving line excludes these changes and training. It still includes
 each service's existing spare-capacity allowance.
 
@@ -364,6 +464,19 @@ model comparison described above.
 
 ## Screenshots
 
+**Interactive scenario planner:** edit a service's growth and compare physical
+and H100-equivalent demand.
+
+![Interactive bottom-up scenario planner](docs/screenshots/scenario-planner.png)
+
+**Organization drill-down:** inspect inference and training models together.
+
+![Organization and model drill-down](docs/screenshots/organization-models.png)
+
+**Training scheduling:** drag plans between months or use the month selector.
+
+![Draggable training plans by month](docs/screenshots/training-schedule.png)
+
 **Capacity forecast:** historical usage, a learned forecast, and a plan with
 25% extra traffic. The controls let users compare changes directly.
 
@@ -421,7 +534,7 @@ through May 2027. You can enter a different planning start month.
 Run the JavaScript calculation tests with Node.js:
 
 ```powershell
-node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs .\tests\sku-model.test.cjs
+node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs .\tests\sku-model.test.cjs .\tests\bottom-up-model.test.cjs
 ```
 
 The calculations are in [portal/model.js](portal/model.js), the UI is in
@@ -429,6 +542,8 @@ The calculations are in [portal/model.js](portal/model.js), the UI is in
 [tests/portal-model.test.cjs](tests/portal-model.test.cjs) and
 [tests/forecast-model.test.cjs](tests/forecast-model.test.cjs), with SKU and
 migration checks in [tests/sku-model.test.cjs](tests/sku-model.test.cjs).
+Growth, normalization, organization rollups and rescheduling tests are in
+[tests/bottom-up-model.test.cjs](tests/bottom-up-model.test.cjs).
 
 ## What it does not do yet
 

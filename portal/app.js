@@ -22,16 +22,20 @@
     storageBlocked = true;
     initialError = `Saved workspace could not be loaded: ${error.message} Showing a demo preview only. Export/repair the saved data outside this portal, import a valid workspace, or explicitly reset the demo. No data has been overwritten.`;
   }
-  let view = "capacity";
+  let view = "planning";
   let serviceFilter = "all";
   let teamFilter = "all";
   let poolFilter = "all";
   let weekly = false;
+  let planningMonth = M.months(state.startMonth).at(-1);
+  let planningUnit = "physical";
+  let planningQuickService = state.services[0].id;
   const latest = () => state.records.length ? [...state.records].sort((a, b) => a.date.localeCompare(b.date)).at(-1).date : "";
   let endDate = latest();
   let startDate = endDate ? new Date(Date.parse(endDate) - 27 * 86400000).toISOString().slice(0, 10) : "";
   let editContext = null;
   const titles = {
+    planning: ["Bottom-up scenario planner", "Change service growth, add training, and drill into organizations and models.", "Export scenario"],
     overview: ["Organization consumption", "Understand service footprints, demand growth, and the baseline behind your capacity plan.", "+ Add consumption"],
     inference: ["Service plans", "Set up serving performance, user-based plans, and manual growth assumptions.", "+ Register service"],
     benchmarks: ["Performance profile library", "Reuse evidence-backed serving profiles, with explicit configuration and token-range safeguards.", "+ Add profile"],
@@ -46,7 +50,7 @@
     el.className = error ? "error" : "";
     el.hidden = false;
   }
-  function save(next, message, override = false) {
+  function save(next, message, override = false, redraw = true) {
     try {
       if (storageBlocked && !override) throw new Error("Saving is blocked because stored data could not be loaded. Import a valid workspace or explicitly reset.");
       next = M.validate(next);
@@ -54,7 +58,7 @@
       state = next;
       storageBlocked = false;
       $("#save-state").textContent = "Saved in this browser";
-      render();
+      if (redraw) render();
       notice(message);
       return true;
     } catch (error) {
@@ -200,6 +204,90 @@
   function requirementRows() {
     return M.capacityForecast(state, serviceFilter, teamFilter, poolFilter).monthly.flatMap(m => m.pools);
   }
+  function planningPlans(workspace) {
+    return workspace.training.filter(t => {
+      const owner = workspace.services.find(s => s.id === t.serviceId);
+      return (serviceFilter === "all" || owner.id === serviceFilter) &&
+        (teamFilter === "all" || owner.team === teamFilter) && (poolFilter === "all" || t.pool === poolFilter);
+    });
+  }
+  function calibrationButton(kind, item) {
+    return `<button class="text-button" data-calibrate-kind="${kind}" data-calibrate-id="${esc(item.id)}" ${M.skuInfo(item.pool).legacy ? 'disabled title="Register an exact-SKU workload before normalizing"' : ""}>Benchmark pair</button>`;
+  }
+  function planningResults(workspace) {
+    const report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter);
+    const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
+    const first = report.monthly[0], last = report.monthly.at(-1);
+    const normalized = planningUnit === "h100";
+    const subtotal = (m, kind) => {
+      const rows = m.workloads.filter(r => r.kind === kind);
+      return normalized ? rows.some(r => r.normalizedGpus === null) ? null :
+        rows.reduce((n, r) => n + r.normalizedGpus, 0) : rows.some(r => r.gpus === null) ? null :
+        rows.reduce((n, r) => n + r.gpus, 0);
+    };
+    const points = report.monthly.map(m => ({month: m.month, inference: subtotal(m, "inference"),
+      training: subtotal(m, "training"), total: normalized ? m.normalizedRequired : m.physicalComplete ? m.required : null}));
+    const growth = first.normalizedRequired !== null && last.normalizedRequired !== null ?
+      M.growth(last.normalizedRequired, first.normalizedRequired) : null;
+    const partial = focused.missing ? `<div class="callout">${focused.missing} workload(s) lack usable normalization evidence.
+      Known subtotal: ${fmt(focused.knownNormalized, 1)} H100 equivalents. This is not a complete normalized requirement.
+      Open the organization or model and add a benchmark pair.</div>` : focused.normalizedRequired === null ?
+      `<div class="callout">${esc(focused.normalizationReason)}</div>` : "";
+    const orgRows = focused.organizations.map(o => `<tr data-org-row="${esc(o.team)}"><td class="service-name">${esc(o.team)}</td><td>${fmt(o.inference)}</td><td>${fmt(o.training)}</td><td>${fmt(o.required)}${o.physicalComplete ? "" : " (partial)"}</td><td>${fmt(o.normalizedRequired, 1)}</td><td><button class="text-button" data-drill-org="${esc(o.team)}">Open models</button></td></tr>`).join("");
+    const modelRows = [...focused.workloads.filter(r => r.kind === "inference").map(r => ({...r, month: focused.month})),
+      ...report.monthly.flatMap(m => m.workloads.filter(r => r.kind === "training").map(r => ({...r, month: m.month})))];
+    const models = modelRows.map(r => `<tr ${r.kind === "inference" ? `data-model-row="${esc(r.id)}"` : `data-training-row="${esc(r.id)}"`}><td class="service-name">${esc(r.name)}<span class="subtext">${esc(r.reason || (r.calibration.source === "synthetic" ? "Illustrative benchmark pair" : r.calibration.source === "same-sku" ? "Reference SKU: 1:1" : "User-supplied benchmark pair"))}</span></td><td>${r.kind}</td><td>${r.month}</td><td>${esc(skuName(r.pool))}</td><td>${fmt(r.gpus)}</td><td>${fmt(r.normalizedGpus, 1)}</td><td>${r.calibration.available ? `${fmt(r.calibration.ratio, 3)} H100 / GPU` : "Not calibrated"}</td><td><button class="text-button" ${r.kind === "inference" ? `data-drill-service="${esc(r.id)}"` : `data-edit-training="${esc(r.id)}"`}>Open model</button>${calibrationButton(r.kind, {id: r.id, pool: r.pool})}</td></tr>`).join("");
+    const scope = teamFilter === "all" && serviceFilter === "all" ?
+      `<section class="panel"><div class="panel-heading"><div><h2>Demand by organization</h2><p>Double-click a row or choose Open models. Organizations use the service's owning team.</p></div></div>${table(["Organization", "Inference GPUs", "Training GPUs", "Total GPUs", "H100 equivalents", ""], orgRows)}</section>` :
+      `<section class="panel"><div class="panel-heading"><div><h2>Inference and training models</h2><p>Inference uses ${focused.month}; training shows each scheduled month. Double-click a model row for details.</p></div></div>${table(["Model / evidence", "Workload", "Month", "Assigned SKU", "GPUs", "H100 equivalents", "Benchmark ratio", ""], models)}</section>`;
+    const selected = workspace.services.find(s => s.id === serviceFilter);
+    const detail = selected ? `<section class="panel"><div class="panel-heading"><h2>${esc(selected.name)}: model assumptions</h2><button class="button subtle" data-edit-service="${esc(selected.id)}">Edit model inputs</button></div><div class="panel-body description">${esc(selected.profile)}<br>Configuration: ${esc(selected.workloadKey)}. Input / output tokens: ${fmt(selected.inputTokens)} / ${fmt(selected.outputTokens)}. Extra demand by month six: ${pct(selected.scenarioGrowthPct ?? 0)}.<br>H100 equivalents compare this workload only. Divide its equivalent count by its own benchmark ratio to recover its assigned-SKU GPU count; replica rounding has already been applied.</div></section>` : "";
+    return `<div class="kpis">${metric(`GPUs required in ${focused.month}`, fmt(focused.required), focused.physicalComplete ? "Inference plus scheduled training; see SKU split below" : "Partial physical demand: missing sizing inputs", true)}${metric("H100-equivalent requirement", fmt(focused.normalizedRequired, 1), `${focused.count - focused.missing} / ${focused.count} workloads covered; a comparison index`)}${metric("Normalized growth: month 1 to 6", pct(growth), "Same reference SKU, workload-specific ratios")}${metric("Training in selected month", fmt(focused.training), "Added on top of service demand")}</div>${partial}
+      <section class="panel"><div class="panel-heading"><div><h2>Bottom-up demand: inference + training</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend"><span><i></i>Inference</span><span><i class="amber"></i>Training</span><span><i class="blue"></i>Total</span></div></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference", color: "#b7ef6a"}, {key: "training", name: "Training", color: "#f2bd6d"}, {key: "total", name: "Inference + training", color: "#8daaff"}], normalized ? "H100-equivalent demand by month" : "Physical GPU demand by month", 0)}</div></section>
+      ${scope}${detail}<section class="panel"><div class="panel-heading"><div><h2>Convert the plan back to assigned SKUs</h2><p>${focused.month}. Counts retain each workload's chosen hardware; ratios do not move jobs or normalize idle supply.</p></div><button class="button subtle" data-export-requirements>Download CSV</button></div>${table(["GPU SKU", "Inference", "Training", "Physical total", "H100 equivalents", "Available", "Gap / spare"], focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.inference)}</td><td>${fmt(p.training)}</td><td>${fmt(p.required)}${p.physicalComplete ? "" : " (partial)"}</td><td>${fmt(p.normalizedRequired, 1)}</td><td>${fmt(p.usable)}</td><td><span class="badge ${p.gap > 0 ? "red" : "green"}">${p.gap > 0 ? "+" : ""}${fmt(p.gap)}${p.physicalComplete ? "" : " (partial)"}</span></td></tr>`).join(""))}</section>`;
+  }
+  function planningView() {
+    const horizon = M.months(state.startMonth);
+    if (!horizon.includes(planningMonth)) planningMonth = horizon.at(-1);
+    const services = chosenServices();
+    const quick = services.find(s => s.id === serviceFilter) || services.find(s => s.id === planningQuickService) || services[0];
+    if (quick) planningQuickService = quick.id;
+    const plans = planningPlans(state);
+    const options = state.forecast || M.defaultForecast();
+    return `<div class="planning-toolbar"><div class="planning-breadcrumb"><button class="text-button" data-planning-root>All organizations</button>${teamFilter !== "all" ? ` / <button class="text-button" data-drill-org="${esc(teamFilter)}">${esc(teamFilter)}</button>` : ""}${serviceFilter !== "all" ? ` / ${esc(state.services.find(s => s.id === serviceFilter).name)}` : ""}</div><label>Inspect month<select id="planning-month">${horizon.map(m => `<option ${m === planningMonth ? "selected" : ""}>${m}</option>`).join("")}</select></label><label>Chart units<select id="planning-unit"><option value="physical" ${planningUnit === "physical" ? "selected" : ""}>Physical GPUs</option><option value="h100" ${planningUnit === "h100" ? "selected" : ""}>H100 equivalents</option></select></label><label class="check-option"><input id="planning-training" type="checkbox" ${options.includeTraining ? "checked" : ""}> Include training</label><button class="text-button" data-view="capacity">Global traffic / efficiency adjustments</button></div>
+      <div class="callout info">Build the plan from services upward. Edit a growth number or drag its slider; results preview immediately and save on release or when you leave the field. Drag training cards between months, or use their month selectors. The demo's benchmark pairs are illustrative, not NVIDIA performance claims.</div>
+      <section class="panel"><div class="panel-heading"><div><h2>Set service growth</h2><p>Extra demand by month six, on top of the learned traffic trend. It compounds over six months; +0% keeps that trend. Launch traffic is added separately.</p></div></div><div class="panel-body planning-quick">${quick ? `<label>Service to adjust<select id="planning-quick-service">${services.map(s => `<option value="${esc(s.id)}" ${s.id === quick.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select><span class="help">${esc(quick.team)} / ${esc(skuName(quick.pool))}</span></label><div><label class="help">Extra demand by month six (%)</label><div class="growth-editor"><input type="range" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" data-service-growth="${esc(quick.id)}" aria-label="Growth slider for ${esc(quick.name)}"><input type="number" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" required data-service-growth="${esc(quick.id)}" aria-label="Growth percentage for ${esc(quick.name)}"></div></div><div><button class="text-button" data-edit-service="${esc(quick.id)}">Edit model inputs</button>${calibrationButton("inference", quick)}</div>` : '<p class="help">No inference service matches these filters. Training on this SKU is still included below.</p>'}</div><p id="planning-preview-status" class="panel-body help" role="status">Saved scenario. Change a slider to preview.</p></section>
+      <div id="planning-results">${planningResults(state)}</div>
+      <section class="panel"><div class="panel-heading"><div><h2>Schedule training on top</h2><p>${options.includeTraining ? "Included in totals. Plans within a month are treated as concurrent." : "Excluded from totals. You can still edit or reschedule the roadmap."} Moves preserve the run's active days; impossible calendar moves are rejected.</p></div><button class="button subtle" data-action="training">Add training plan</button></div><div class="training-scroll"><div class="training-board">${horizon.map(m => `<section class="training-lane" data-training-drop="${m}" aria-label="Training scheduled for ${m}"><h3>${m}</h3>${plans.filter(t => t.month === m).map(t => `<article class="training-drag-card" draggable="true" data-training-drag="${esc(t.id)}"><span class="help">Drag to reschedule</span><h3>${esc(t.name)}</h3><p>${fmt(M.training(t).totalGpus)} GPUs<br><span class="help">${esc(skuName(t.pool))}</span></p><label class="help">Move to month<select data-training-month="${esc(t.id)}" aria-label="Move ${esc(t.name)} to month">${horizon.map(month => `<option ${month === m ? "selected" : ""}>${month}</option>`).join("")}</select></label><div class="form-actions"><button class="text-button" data-edit-training="${esc(t.id)}">Edit model</button>${calibrationButton("training", t)}</div></article>`).join("") || '<p class="help">Drop a training plan here.</p>'}</section>`).join("")}</div></div>${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon. Open Training roadmap to see them.</p>' : ""}</section>
+      <section class="panel"><div class="panel-heading"><h2>How normalization works</h2></div><div class="panel-body description">For each workload: ratio = benchmark throughput per selected-SKU GPU / benchmark throughput per H100 SXM GPU. H100 equivalents = required GPUs x that ratio. Convert back for that same workload: equivalents / ratio. Compare identical model versions, precision, job sizes and response-time targets; enter full-replica throughput divided by its GPU count.<br>Inference uses fixed work items/second/GPU; training uses training tokens/second/GPU. Ratios are workload-specific, not a universal H100-to-B200 conversion. A GB200 superchip contains a CPU and two GPUs; it is not one interchangeable GPU.<br>Missing, changed or future-dated evidence makes normalized totals unavailable. Physical SKU demand remains visible. This index does not prove memory fit, interconnect compatibility, or that a job can move to another GPU.</div></section>`;
+  }
+  function previewServiceGrowth(input, persist) {
+    const status = $("#planning-preview-status");
+    if (!input.checkValidity()) {
+      status.textContent = "Preview not applied. Enter growth between -90% and +300% in steps of 0.1%.";
+      return;
+    }
+    const next = clone();
+    const service = next.services.find(s => s.id === input.dataset.serviceGrowth);
+    service.scenarioGrowthPct = Number(input.value);
+    document.querySelectorAll("[data-service-growth]").forEach(el => {
+      if (el !== input && el.dataset.serviceGrowth === service.id) el.value = input.value;
+    });
+    if (persist) {
+      if (!save(next, "Service growth saved. SKU demand and organization totals updated.", false, false)) {render(); return;}
+      status.textContent = "Scenario saved.";
+    } else status.textContent = "Live preview - release the slider or leave the number field to save.";
+    $("#planning-results").innerHTML = planningResults(next);
+  }
+  function rescheduleTraining(id, targetMonth) {
+    try {
+      const next = M.moveTraining(state, id, targetMonth);
+      if (!save(next, "Training rescheduled. Monthly GPU requirements recalculated.")) render();
+    } catch (error) {
+      notice(`Training not moved: ${error.message}`, true);
+      render();
+    }
+  }
   function capacityView() {
     const forecast = M.capacityForecast(state, serviceFilter, teamFilter, poolFilter);
     const rows = forecast.monthly.flatMap(m => m.pools);
@@ -252,7 +340,7 @@
     $("#main-action").textContent = titles[view][2];
     $("#service-filter").innerHTML = `<option value="all">All services</option>${serviceOptions(serviceFilter)}`;
     $("#service-filter").value = serviceFilter;
-    $("#team-filter").innerHTML = `<option value="all">All teams</option>${[...new Set(state.services.map(s => s.team))].sort().map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}`;
+    $("#team-filter").innerHTML = `<option value="all">All organizations</option>${[...new Set(state.services.map(s => s.team))].sort().map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}`;
     $("#team-filter").value = teamFilter;
     $("#pool-filter").innerHTML = `<option value="all">All GPU SKUs</option>${poolOptions(poolFilter)}`;
     $("#pool-filter").value = poolFilter;
@@ -263,7 +351,7 @@
       else b.removeAttribute("aria-current");
     });
     $("#content").innerHTML = ({overview, inference: inferenceView, benchmarks: benchmarksView, forecasts: forecastsView,
-      training: trainingView, capacity: capacityView, data: dataView})[view]();
+      training: trainingView, capacity: capacityView, planning: planningView, data: dataView})[view]();
   }
   function field(name, label, value, type = "number", extra = "", help = "") {
     return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra} required>${help ? `<span class="help">${help}</span>` : ""}</label>`;
@@ -326,6 +414,20 @@
         field("activity", "Reported average GPU activity (%)", "", "number", 'min="0" max="100" step="any"', "Activity while allocated; not measured percentage of peak FLOP/s.") +
         field("peakRps", "Daily peak request rate (RPS)", "", "number", 'min="0" max="1000000000" step="any"') +
         field("requests", "Total requests in the day", "", "number", 'min="0" max="1000000000000000" step="1"');
+    } else if (kind === "normalize-inference" || kind === "normalize-training") {
+      const workload = kind === "normalize-inference" ? "inference" : "training";
+      const item = (workload === "inference" ? state.services : state.training).find(r => r.id === id);
+      const existing = item.normalization;
+      const performance = workload === "inference" ? M.profileFor(state, item) : null;
+      const selectedRate = performance?.available ? performance.rpsPerReplica / performance.gpusPerReplica : existing?.selectedRate ?? "";
+      const units = workload === "inference" ? "fixed work items/second/GPU at the same SLO" : "training tokens/second/GPU";
+      title = `H100 benchmark pair: ${item.name}`;
+      intro = `Compare ${skuName(item.pool)} with H100 SXM 80GB for this exact workload. Units: ${units}. Match model, precision and execution configuration; rates are per GPU within full replicas, not a promise of single-GPU fit. Saving records the current configuration.`;
+      fields = field("selectedRate", `${skuName(item.pool)} throughput per GPU`, selectedRate, "number", `min="0.000000001" max="1000000000000" step="any" ${performance?.available ? "readonly" : ""}`) +
+        field("referenceRate", "H100 SXM throughput per GPU", existing?.referenceRate ?? "", "number", 'min="0.000000001" max="1000000000000" step="any"') +
+        field("measuredOn", "Evidence date (before planning starts)", existing?.measuredOn ?? new Date(Date.parse(`${state.startMonth}-01`) - 86400000).toISOString().slice(0, 10), "date") +
+        selectField("source", "Evidence source", `<option value="user-benchmark" ${existing?.source !== "synthetic" ? "selected" : ""}>User-supplied benchmark</option><option value="synthetic" ${existing?.source === "synthetic" ? "selected" : ""}>Illustrative example</option>`) +
+        field("evidence", "Benchmark evidence / configuration assumptions", existing?.evidence ?? "", "text", 'maxlength="150"');
     } else if (kind === "training") {
       const trainingPool = poolFilter === "all" ? "H200-SXM-141GB" : poolFilter;
       const t = state.training.find(t => t.id === id) || {name: "", serviceId: serviceFilter === "all" ? state.services[0].id : serviceFilter, pool: trainingPool, month: state.startMonth, parametersB: 70, tokensB: 1000, days: 14, peakTflops: "", mfu: 40, memoryGB: M.skuInfo(trainingPool).memoryGB ?? "", bytesPerParameter: 16, block: 256, runs: 1};
@@ -372,7 +474,7 @@
     let next = clone();
     try {
       if (kind === "service") {
-        const s = {...values, id: id || `service-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
+        const s = {...next.services.find(s => s.id === id), ...values, id: id || `service-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
         for (const key of ["gpusPerReplica", "rpsPerReplica", "annualGrowth", "monthlyLaunchRps", "headroom"]) s[key] = Number(values[key]);
         s.drivers = {};
         for (const key of Object.keys(M.defaultDrivers())) {s.drivers[key] = Number(values[key]); delete s[key];}
@@ -401,8 +503,13 @@
         if (index >= 0) next.records[index] = r;
         else next.records.push(r);
         M.validate(next);
+      } else if (kind === "normalize-inference" || kind === "normalize-training") {
+        const workload = kind === "normalize-inference" ? "inference" : "training";
+        const item = (workload === "inference" ? next.services : next.training).find(r => r.id === id);
+        item.normalization = {...values, selectedRate: Number(values.selectedRate), referenceRate: Number(values.referenceRate),
+          sku: item.pool, referenceSku: M.NORMALIZATION_REFERENCE, configuration: M.normalizationKey(workload, item)};
       } else if (kind === "training") {
-        const t = {...values, id: id || `training-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
+        const t = {...next.training.find(t => t.id === id), ...values, id: id || `training-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
         for (const key of ["parametersB", "tokensB", "days", "peakTflops", "mfu", "memoryGB", "bytesPerParameter", "block", "runs"]) t[key] = Number(values[key]);
         const index = next.training.findIndex(t => t.id === id);
         if (index >= 0) next.training[index] = t;
@@ -444,15 +551,16 @@
     notice("Workspace JSON exported. It includes inputs and provenance, not live infrastructure state.");
   }
   function exportRequirements() {
-    const heads = ["month", "pool", "baselineInference", "inference", "training", "required", "usable", "gap", "complete", "missing", "skuName", "memoryGB", "formFactor"];
-    const rows = requirementRows().map(r => ({...r, skuName: skuName(r.pool),
+    const heads = ["month", "pool", "baselineInference", "inference", "training", "required", "usable", "gap", "complete", "missing", "skuName", "memoryGB", "formFactor", "normalizedRequired", "normalizationMissing"];
+    const rows = M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter).monthly.flatMap(m => m.pools).map(r => ({...r, skuName: skuName(r.pool),
       memoryGB: M.skuInfo(r.pool).memoryGB ?? "Unspecified", formFactor: M.skuInfo(r.pool).formFactor}));
-    const csv = [heads.join(","), ...rows.map(r => heads.map(h => String(r[h])).join(","))].join("\r\n");
+    const csv = [heads.join(","), ...rows.map(r => heads.map(h => String(r[h] ?? "")).join(","))].join("\r\n");
     download("gpu-capacity-requirements.csv", csv, "text/csv");
     notice("Forecast CSV exported with your saved adjustments and current filters.");
   }
   function exportCapacityForecast() {
-    const forecast = M.capacityForecast(state, serviceFilter, teamFilter, poolFilter);
+    const forecast = view === "planning" ? M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter) :
+      M.capacityForecast(state, serviceFilter, teamFilter, poolFilter);
     download("gpu-capacity-forecast.json", JSON.stringify({planningStart: state.startMonth,
       filters: {service: serviceFilter, team: teamFilter, pool: poolFilter}, skuCatalog: M.SKU_CATALOG, ...forecast}, null, 2), "application/json");
     notice("Forecast exported with model evidence, monthly demand, supply and your adjustments.");
@@ -466,7 +574,11 @@
   document.addEventListener("click", event => {
     const button = event.target.closest("button");
     if (!button) return;
-    if (button.dataset.view) {view = button.dataset.view; render();}
+    if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; render();}
+    else if (button.dataset.drillOrg) {teamFilter = button.dataset.drillOrg; serviceFilter = "all"; render();}
+    else if (button.dataset.drillService) {serviceFilter = button.dataset.drillService; render();}
+    else if (button.dataset.calibrateKind) openEditor(`normalize-${button.dataset.calibrateKind}`, button.dataset.calibrateId);
+    else if (button.dataset.view) {view = button.dataset.view; render();}
     else if (button.dataset.service) {serviceFilter = button.dataset.service; render();}
     else if (button.dataset.editService) openEditor("service", button.dataset.editService);
     else if (button.dataset.editBenchmark) openEditor("benchmark", button.dataset.editBenchmark);
@@ -482,6 +594,48 @@
     }
     else if (button.dataset.granularity) {weekly = button.dataset.granularity === "weekly"; render();}
   });
+  document.addEventListener("dblclick", event => {
+    if (event.target.closest("button,input,select")) return;
+    const org = event.target.closest("[data-org-row]");
+    const model = event.target.closest("[data-model-row]");
+    const plan = event.target.closest("[data-training-row]");
+    if (org) {teamFilter = org.dataset.orgRow; serviceFilter = "all"; render();}
+    else if (model) {serviceFilter = model.dataset.modelRow; render();}
+    else if (plan) openEditor("training", plan.dataset.trainingRow);
+  });
+  document.addEventListener("input", event => {
+    if (event.target.matches("[data-service-growth]")) previewServiceGrowth(event.target, false);
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Enter" && event.target.matches("[data-service-growth]")) {
+      event.preventDefault(); event.target.blur();
+    }
+  });
+  document.addEventListener("dragstart", event => {
+    const card = event.target.closest("[data-training-drag]");
+    if (!card || event.target.closest("input,select,button")) return;
+    event.dataTransfer.setData("application/x-gpu-atlas-training", card.dataset.trainingDrag);
+    event.dataTransfer.effectAllowed = "move";
+  });
+  document.addEventListener("dragover", event => {
+    const lane = event.target.closest("[data-training-drop]");
+    if (lane && Array.from(event.dataTransfer.types).includes("application/x-gpu-atlas-training")) {
+      event.preventDefault(); event.dataTransfer.dropEffect = "move"; lane.classList.add("drop-target");
+    }
+  });
+  document.addEventListener("dragleave", event => {
+    const lane = event.target.closest("[data-training-drop]");
+    if (lane && !lane.contains(event.relatedTarget)) lane.classList.remove("drop-target");
+  });
+  document.addEventListener("dragend", () => document.querySelectorAll(".drop-target").forEach(el => el.classList.remove("drop-target")));
+  document.addEventListener("drop", event => {
+    const lane = event.target.closest("[data-training-drop]");
+    if (!lane) return;
+    event.preventDefault(); lane.classList.remove("drop-target");
+    const id = event.dataTransfer.getData("application/x-gpu-atlas-training");
+    if (!id) {notice("Drop a training card from this workspace.", true); return;}
+    rescheduleTraining(id, lane.dataset.trainingDrop);
+  });
   document.addEventListener("submit", event => {
     if (event.target.id !== "forecast-controls") return;
     event.preventDefault();
@@ -494,7 +648,16 @@
   });
   document.addEventListener("change", async event => {
     const input = event.target;
-    if (input.id === "service-filter") {serviceFilter = input.value; render();}
+    if (input.matches("[data-service-growth]")) previewServiceGrowth(input, true);
+    else if (input.dataset.trainingMonth) rescheduleTraining(input.dataset.trainingMonth, input.value);
+    else if (input.id === "planning-quick-service") {planningQuickService = input.value; render();}
+    else if (input.id === "planning-month") {planningMonth = input.value; render();}
+    else if (input.id === "planning-unit") {planningUnit = input.value; render();}
+    else if (input.id === "planning-training") {
+      const next = clone(); next.forecast = {...(state.forecast || M.defaultForecast()), includeTraining: input.checked};
+      save(next, "Training inclusion updated.");
+    }
+    else if (input.id === "service-filter") {serviceFilter = input.value; render();}
     else if (input.name === "pool" && editContext?.kind === "training") {
       const hardware = M.skuInfo(input.value);
       const memory = $("#editor-fields [name=memoryGB]");
@@ -527,14 +690,14 @@
     }
   });
   $("#main-action").addEventListener("click", () => {
-    if (view === "capacity") exportCapacityForecast();
+    if (view === "capacity" || view === "planning") exportCapacityForecast();
     else if (view === "forecasts") exportForecasts();
     else if (view === "benchmarks") openEditor("benchmark");
     else if (view === "data") exportWorkspace();
     else openEditor({overview: "consumption", inference: "service", training: "training"}[view]);
   });
   $("#export").addEventListener("click", exportWorkspace);
-  $(".brand").addEventListener("click", event => {event.preventDefault(); view = "capacity"; render();});
+  $(".brand").addEventListener("click", event => {event.preventDefault(); view = "planning"; render();});
   $("#editor-form").addEventListener("submit", submitEditor);
   $("#close-editor").addEventListener("click", () => $("#editor").close());
   $("#cancel-editor").addEventListener("click", () => $("#editor").close());

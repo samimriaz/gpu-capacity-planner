@@ -10,10 +10,11 @@
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="#capacity"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
+    <a class="brand" href="#planning"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
     <div class="workspace-label">PLANNING WORKSPACE</div>
     <nav aria-label="Main navigation">
-      <button data-view="capacity" class="active"><span>01</span> Capacity forecast</button>
+      <button data-view="planning" class="active"><span>00</span> Scenario planner</button>
+      <button data-view="capacity"><span>01</span> Capacity forecast</button>
       <button data-view="overview"><span>02</span> Consumption</button>
       <button data-view="inference"><span>03</span> Service plans</button>
       <button data-view="benchmarks"><span>04</span> Performance profiles</button>
@@ -35,7 +36,7 @@
     </section>
     <section class="filterbar" aria-label="Workspace filters">
       <label>Service<select id="service-filter"><option value="all">All services</option></select></label>
-      <label>Team<select id="team-filter"><option value="all">All teams</option></select></label>
+      <label>Organization<select id="team-filter"><option value="all">All organizations</option></select></label>
       <label>GPU SKU<select id="pool-filter"><option value="all">All GPU SKUs</option></select></label>
       <label>Planning starts<input type="month" id="start-month" required></label>
       <span class="filter-note">Six-month planning horizon <span class="dot"></span></span>

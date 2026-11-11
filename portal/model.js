@@ -20,6 +20,7 @@
     {name: "ChipNeMo", description: "NVIDIA's published research on language models for chip-design assistance.", source: "https://blogs.nvidia.com/blog/llm-semiconductors-chip-nemo/"},
   ];
   const DAY = 86400000;
+  const NORMALIZATION_REFERENCE = "H100-SXM-80GB";
   const fail = (message) => { throw new Error(message); };
   function number(value, name, min = 0, max = 1e15, integer = false) {
     if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
@@ -91,6 +92,8 @@
     number(s.gpusPerReplica, "GPUs per replica", 1, 1024, true);
     number(s.rpsPerReplica, "Sustainable RPS per replica", 0.0001, 1e9);
     number(s.annualGrowth, "Annual demand growth %", -90, 1000);
+    if (s.scenarioGrowthPct !== undefined) number(s.scenarioGrowthPct, "Extra demand by month six %", -90, 300);
+    if (s.normalization !== undefined) normalizationCheck(s.normalization);
     number(s.monthlyLaunchRps, "Additional peak RPS per month", 0, 1e9);
     number(s.headroom, "Spare headroom %", 0, 80);
     text(s.profile, "Performance profile assumptions");
@@ -171,7 +174,10 @@
       if (keys.has(key)) fail("Only one daily consumption row per service is allowed.");
       keys.add(key);
     });
-    state.training.forEach(t => trainingCheck(t, state.services));
+    state.training.forEach(t => {
+      trainingCheck(t, state.services);
+      if (t.normalization !== undefined) normalizationCheck(t.normalization);
+    });
     if (new Set(state.training.map(t => t.id)).size !== state.training.length) fail("Training plan IDs must be unique.");
     if (!state.supply || !Array.isArray(state.supply.additions)) fail("Supply inputs are required.");
     if (Object.keys(state.supply).some(p => p !== "additions" && !POOLS.includes(p))) fail("Supply references an unknown GPU SKU.");
@@ -365,8 +371,9 @@
     const options = state.forecast || defaultForecast();
     forecastCheck(options);
     if (selectedPool !== "all") pool(selectedPool);
-    const services = state.services.filter(s => (selectedId === "all" || s.id === selectedId) &&
-      (selectedTeam === "all" || s.team === selectedTeam) && (selectedPool === "all" || s.pool === selectedPool));
+    const owners = state.services.filter(s => (selectedId === "all" || s.id === selectedId) &&
+      (selectedTeam === "all" || s.team === selectedTeam));
+    const services = owners.filter(s => selectedPool === "all" || s.pool === selectedPool);
     const evidence = services.map(service => {
       const history = trafficForecast(state, service.id);
       const demand = service.demandMethod === "drivers" ? {available: true, source: "drivers", method: "drivers",
@@ -381,20 +388,23 @@
         const estimates = entries.filter(e => e.available).map(e => {
           const baseRps = e.demand.monthly[index].peakRps;
           const launchRps = options.includeLaunches ? e.service.monthlyLaunchRps * (index + 1) : 0;
-          const peakRps = baseRps * (1 + options.trafficAdjustmentPct / 100) + launchRps;
+          const growthFactor = (1 + (e.service.scenarioGrowthPct ?? 0) / 100) ** ((index + 1) / 6);
+          const peakRps = baseRps * growthFactor * (1 + options.trafficAdjustmentPct / 100) + launchRps;
           const usableShare = 1 - e.service.headroom / 100;
           const baselineGpus = Math.ceil(baseRps / usableShare / e.performance.rpsPerReplica) * e.performance.gpusPerReplica;
           const gpus = Math.ceil(peakRps / usableShare / (e.performance.rpsPerReplica *
             (1 + options.throughputChangePct / 100))) * e.performance.gpusPerReplica;
           const available = Number.isSafeInteger(baselineGpus) && Number.isSafeInteger(gpus);
-          return {serviceId: e.service.id, baseRps, launchRps, peakRps, baselineGpus, gpus, available,
+          return {serviceId: e.service.id, baseRps, launchRps, growthFactor, peakRps, baselineGpus, gpus, available,
             reason: available ? "" : "GPU estimate exceeds the supported count range. Check traffic and serving throughput."};
         });
-        const missing = entries.filter(e => !e.available).length + estimates.filter(e => !e.available).length;
         const inferenceGpus = estimates.filter(e => e.available).reduce((n, e) => n + e.gpus, 0);
         const baselineInference = estimates.filter(e => e.available).reduce((n, e) => n + e.baselineGpus, 0);
-        const trainingGpus = options.includeTraining ? state.training.filter(t => t.month === m && t.pool === p &&
-          services.some(s => s.id === t.serviceId)).reduce((n, t) => n + training(t).totalGpus, 0) : 0;
+        const trainingCounts = options.includeTraining ? state.training.filter(t => t.month === m && t.pool === p &&
+          owners.some(s => s.id === t.serviceId)).map(t => training(t).totalGpus) : [];
+        const missing = entries.filter(e => !e.available).length + estimates.filter(e => !e.available).length +
+          trainingCounts.filter(n => !Number.isSafeInteger(n)).length;
+        const trainingGpus = trainingCounts.filter(Number.isSafeInteger).reduce((n, count) => n + count, 0);
         const supply = state.supply[p];
         const usable = supply.installed - supply.unavailable - supply.reserve +
           state.supply.additions.filter(a => a.pool === p && a.month <= m).reduce((n, a) => n + a.gpus, 0);
@@ -424,6 +434,103 @@
         rows.reduce((n, r) => n + r.gpuHours / 24, 0))) : null, observedDays: days.length};
     });
     return {options, services: evidence, monthly, historical};
+  }
+  function normalizationCheck(n) {
+    if (!n || typeof n !== "object" || Array.isArray(n)) fail("Normalization requires a workload benchmark pair.");
+    pool(n.sku);
+    if (skuInfo(n.sku).legacy) fail("Normalization requires an exact GPU SKU, not an unspecified variant.");
+    if (n.referenceSku !== NORMALIZATION_REFERENCE) fail("Normalization reference must be H100 SXM 80GB.");
+    number(n.selectedRate, "Selected-SKU benchmark rate per GPU", 0.000000001, 1e12);
+    number(n.referenceRate, "H100 benchmark rate per GPU", 0.000000001, 1e12);
+    if (n.sku === n.referenceSku && n.selectedRate !== n.referenceRate) fail("Identical SKUs must use identical benchmark rates.");
+    date(n.measuredOn);
+    text(n.evidence, "Normalization benchmark evidence");
+    if (!["synthetic", "user-benchmark"].includes(n.source)) fail("Choose a normalization evidence source.");
+    if (typeof n.configuration !== "string" || !n.configuration.length || n.configuration.length > 2000) {
+      fail("Normalization requires a workload configuration snapshot.");
+    }
+  }
+  function normalizationKey(kind, item) {
+    return JSON.stringify(kind === "inference" ? [item.workloadKey, item.inputTokens, item.outputTokens, item.benchmarkId] :
+      [item.parametersB, item.tokensB, item.days, item.peakTflops, item.mfu, item.memoryGB, item.bytesPerParameter, item.block, item.runs]);
+  }
+  function normalizationFor(state, kind, item) {
+    if (item.pool === NORMALIZATION_REFERENCE) return {available: true, ratio: 1, source: "same-sku", reason: ""};
+    const n = item.normalization;
+    if (!n) return {available: false, ratio: null, reason: "Add a workload-specific H100 benchmark pair."};
+    normalizationCheck(n);
+    if (n.sku !== item.pool || n.configuration !== normalizationKey(kind, item)) {
+      return {available: false, ratio: null, reason: "Workload or SKU changed. Recalibrate the benchmark pair."};
+    }
+    if (n.measuredOn >= `${state.startMonth}-01`) {
+      return {available: false, ratio: null, reason: "Benchmark evidence must predate the planning window."};
+    }
+    if (kind === "inference") {
+      const performance = profileFor(state, item);
+      if (!performance.available) return {available: false, ratio: null, reason: performance.reason};
+      const rate = performance.rpsPerReplica / performance.gpusPerReplica;
+      if (Math.abs(rate - n.selectedRate) > Math.max(rate, n.selectedRate) * 1e-9) {
+        return {available: false, ratio: null, reason: "Serving throughput changed. Recalibrate the benchmark pair."};
+      }
+    }
+    return {available: true, ratio: n.selectedRate / n.referenceRate, selectedRate: n.selectedRate,
+      referenceRate: n.referenceRate, configuration: n.configuration, source: n.source, evidence: n.evidence,
+      measuredOn: n.measuredOn, reason: ""};
+  }
+  function bottomUpForecast(state, selectedId = "all", selectedTeam = "all", selectedPool = "all") {
+    const forecast = capacityForecast(state, selectedId, selectedTeam, selectedPool);
+    const horizon = forecast.monthly.map(m => {
+      const rows = forecast.services.map(e => {
+        const estimate = m.pools.flatMap(p => p.estimates).find(r => r.serviceId === e.service.id);
+        return {kind: "inference", item: e.service, serviceId: e.service.id,
+          gpus: e.available && estimate?.available ? estimate.gpus : null, reason: e.reason || estimate?.reason || ""};
+      });
+      if (forecast.options.includeTraining) {
+        for (const plan of state.training) {
+          const owner = state.services.find(s => s.id === plan.serviceId);
+          if (plan.month === m.month && (selectedId === "all" || owner.id === selectedId) &&
+              (selectedTeam === "all" || owner.team === selectedTeam) && (selectedPool === "all" || plan.pool === selectedPool)) {
+            rows.push({kind: "training", item: plan, serviceId: owner.id, gpus: training(plan).totalGpus, reason: ""});
+          }
+        }
+      }
+      const workloads = rows.map(r => {
+        const calibration = normalizationFor(state, r.kind, r.item);
+        const physicalComplete = r.gpus !== null && Number.isSafeInteger(r.gpus);
+        const equivalent = physicalComplete && (r.gpus === 0 || calibration.available) ?
+          r.gpus * (calibration.ratio ?? 0) : null;
+        const normalizedGpus = equivalent !== null && Number.isFinite(equivalent) && equivalent <= Number.MAX_SAFE_INTEGER ? equivalent : null;
+        return {kind: r.kind, id: r.item.id, name: r.item.name, serviceId: r.serviceId,
+          team: state.services.find(s => s.id === r.serviceId).team, pool: r.item.pool, gpus: physicalComplete ? r.gpus : null,
+          normalizedGpus, calibration, reason: !physicalComplete ? r.reason || "GPU count is outside the supported range." :
+            normalizedGpus === null ? calibration.reason || "Normalized count is outside the supported range." : ""};
+      });
+      const summarize = items => {
+        const missing = items.filter(r => r.normalizedGpus === null).length;
+        const knownNormalized = items.reduce((n, r) => n + (r.normalizedGpus ?? 0), 0);
+        const physicalComplete = items.every(r => r.gpus !== null);
+        return {inference: items.filter(r => r.kind === "inference").reduce((n, r) => n + (r.gpus ?? 0), 0),
+          training: items.filter(r => r.kind === "training").reduce((n, r) => n + (r.gpus ?? 0), 0),
+          required: items.reduce((n, r) => n + (r.gpus ?? 0), 0), physicalComplete,
+          normalizedRequired: !missing && Number.isFinite(knownNormalized) && knownNormalized <= Number.MAX_SAFE_INTEGER ? knownNormalized : null,
+          knownNormalized, missing, normalizationMissing: missing, count: items.length,
+          normalizationReason: missing ? "Some workloads lack usable benchmark pairs or sizing inputs." :
+            knownNormalized > Number.MAX_SAFE_INTEGER || !Number.isFinite(knownNormalized) ? "Normalized total exceeds the supported count range." : ""};
+      };
+      return {...m, ...summarize(workloads), workloads,
+        organizations: [...new Set(workloads.map(r => r.team))].sort().map(team => ({
+          team, ...summarize(workloads.filter(r => r.team === team)),
+        })),
+        pools: m.pools.map(p => ({...p, ...summarize(workloads.filter(r => r.pool === p.pool)), missing: p.missing}))};
+    });
+    return {...forecast, referenceSku: NORMALIZATION_REFERENCE, monthly: horizon};
+  }
+  function moveTraining(state, id, targetMonth) {
+    month(targetMonth);
+    if (!months(state.startMonth).includes(targetMonth)) fail("Move training to a month in the current planning horizon.");
+    if (!state.training.some(t => t.id === id)) fail("Training plan no longer exists.");
+    const next = {...state, training: state.training.map(t => t.id === id ? {...t, month: targetMonth} : t)};
+    return validate(next);
   }
   function training(plan) {
     const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
@@ -508,7 +615,7 @@
           peakRps, requests: Math.round(peakRps * 86400 * 0.36), source: "synthetic"});
       });
     }
-    return validate({
+    const workspace = {
       version: 3, startMonth: "2026-12",
       services: services.map(s => ({...s, demandMethod: "historical", drivers: defaultDrivers(),
         benchmarkId: "", workloadKey: `${s.id}-demo-fixed-request`, inputTokens: ["assistant", "chip-design"].includes(s.id) ? 1024 : 0,
@@ -535,11 +642,26 @@
         "RTX-PRO-6000-BW-SERVER-96GB": {installed: 16000, unavailable: 1000, reserve: 800},
         additions: [{pool: "H200-SXM-141GB", month: "2027-02", gpus: 8192}],
       },
-    });
+    };
+    const ratios = [1.6, 0.8, 2.4, 1, 1.3, 1.8, 1.5];
+    for (const [index, service] of workspace.services.entries()) {
+      const selectedRate = service.rpsPerReplica / service.gpusPerReplica;
+      service.normalization = {sku: service.pool, referenceSku: NORMALIZATION_REFERENCE,
+        configuration: normalizationKey("inference", service), selectedRate, referenceRate: selectedRate / ratios[index],
+        measuredOn: "2026-11-09", source: "synthetic",
+        evidence: "Illustrative paired rates for this workload, not measured hardware performance."};
+    }
+    for (const [index, plan] of workspace.training.entries()) {
+      plan.normalization = {sku: plan.pool, referenceSku: NORMALIZATION_REFERENCE,
+        configuration: normalizationKey("training", plan), selectedRate: index ? 3000 : 900, referenceRate: index ? 1200 : 600,
+        measuredOn: "2026-11-09", source: "synthetic",
+        evidence: "Illustrative training tokens/second/GPU at the same model configuration, not measured performance."};
+    }
+    return validate(workspace);
   }
-  const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
+  const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
-    training, portfolio, comparePeriods, demo};
+    normalizationKey, normalizationFor, bottomUpForecast, moveTraining, training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
