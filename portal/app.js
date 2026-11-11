@@ -214,8 +214,71 @@
   function calibrationButton(kind, item) {
     return `<button class="text-button" data-calibrate-kind="${kind}" data-calibrate-id="${esc(item.id)}" ${M.skuInfo(item.pool).legacy ? 'disabled title="Register an exact-SKU workload before normalizing"' : ""}>Benchmark pair</button>`;
   }
-  function planningResults(workspace) {
-    const report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter);
+  function forecastLogicExample(workspace, report) {
+    const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
+    const entries = focused.pools.flatMap(p => p.estimates);
+    const selected = report.services.find(e => e.service.id === planningQuickService) || report.services[0];
+    const estimate = selected && entries.find(e => e.serviceId === selected.service.id);
+    const usable = selected?.available && estimate?.available;
+    let serving;
+    if (usable) {
+      const service = selected.service, performance = selected.performance;
+      const throughput = performance.rpsPerReplica * (1 + report.options.throughputChangePct / 100);
+      const capacityShare = 1 - service.headroom / 100;
+      serving = `<h3>One service: ${esc(service.name)} in ${focused.month}</h3>
+        <ol class="logic-calculation">
+          <li>Start with ${fmt(estimate.baseRps, 2)} peak work items/second from ${selected.demand.source === "history" ? "the learned traffic forecast" : "the entered user-demand plan"}. Apply this service's growth and the global traffic change, then add launches:<br><code>${fmt(estimate.baseRps, 2)} x ${fmt(estimate.growthFactor, 6)} x ${fmt(1 + report.options.trafficAdjustmentPct / 100, 4)} + ${fmt(estimate.launchRps, 2)} = ${fmt(estimate.peakRps, 2)} peak work items/second.</code></li>
+          <li>One replica uses ${performance.gpusPerReplica} ${esc(skuName(service.pool))} GPUs and handles ${fmt(performance.rpsPerReplica, 4)} work items/second at the required response time. The ${pct(report.options.throughputChangePct)} throughput adjustment makes that ${fmt(throughput, 4)}. Keep ${fmt(service.headroom, 2)}% spare capacity, leaving ${fmt(throughput * capacityShare, 4)} usable work items/second per replica.</li>
+          <li>Round up to whole replicas, then multiply by GPUs per replica:<br><code>Round up (${fmt(estimate.peakRps, 2)} / ${fmt(throughput * capacityShare, 4)}) = ${fmt(estimate.gpus / performance.gpusPerReplica)} replicas.<br>${fmt(estimate.gpus / performance.gpusPerReplica)} replicas x ${performance.gpusPerReplica} GPUs = ${fmt(estimate.gpus)} required GPUs.</code></li>
+        </ol><p class="help">Throughput source: ${esc(performance.source === "inline-assumption" ? "entered service assumption" : performance.source === "synthetic" ? "illustrative profile" : "user-supplied benchmark")}. Displayed rates are rounded; GPU totals use full precision.</p>`;
+    } else serving = `<h3>One-service calculation</h3><p>${esc(selected ? selected.reason || estimate?.reason || "This service cannot be sized with the current inputs." : "No inference service matches these filters. Training on the selected SKU can still contribute below.")}</p>`;
+    const rows = report.services.map(e => {
+      const item = entries.find(r => r.serviceId === e.service.id);
+      const available = e.available && item?.available;
+      return `<tr><td class="service-name">${esc(e.service.name)}<span class="subtext">${esc(skuName(e.service.pool))}</span></td><td>${available ? fmt(item.peakRps, 2) : "Not available"}</td><td>${available ? fmt(e.performance.rpsPerReplica * (1 + report.options.throughputChangePct / 100), 4) : "Not available"}</td><td>${fmt(e.service.headroom, 2)}%</td><td>${available ? fmt(e.performance.gpusPerReplica) : "Not available"}</td><td>${available ? fmt(item.gpus) : "Not available"}${available ? "" : `<span class="subtext">${esc(e.reason || item?.reason || "Missing sizing inputs")}</span>`}</td></tr>`;
+    }).join("");
+    const horizon = M.months(workspace.startMonth);
+    const plans = planningPlans(workspace).filter(t => horizon.includes(t.month));
+    const plan = plans.find(t => t.month === focused.month) || [...plans].sort((a, b) => a.month.localeCompare(b.month))[0];
+    let training = "<p>No training plan matches these filters within the planning horizon. Training requires separate model, token, timing, memory and MFU inputs; it is not inferred from service request rates.</p>";
+    if (plan) {
+      const result = M.training(plan);
+      const status = !report.options.includeTraining ? "Excluded from totals because Include training is off." :
+        plan.month === focused.month ? "Included in the inspected month's total." :
+          `Scheduled in ${plan.month}, not in the inspected month ${focused.month}.`;
+      training = `<h3>Training example: ${esc(plan.name)}</h3><p>${esc(skuName(plan.pool))}. ${status}</p>
+        <ol class="logic-calculation">
+          <li>Dense-model work: <code>6 x ${fmt(plan.parametersB, 3)} billion parameters x ${fmt(plan.tokensB, 3)} billion training tokens = ${result.flops.toExponential(2)} FLOPs.</code></li>
+          <li>Effective GPU speed: <code>${fmt(plan.peakTflops, 3)} peak TFLOP/s x ${fmt(plan.mfu, 2)}% MFU = ${fmt(plan.peakTflops * plan.mfu / 100, 3)} effective TFLOP/s per GPU.</code> MFU is the share of theoretical computing speed achieved on model work, not the GPU busy percentage.</li>
+          <li>Finishing within ${fmt(plan.days, 2)} active days needs ${fmt(result.computeGpus)} GPUs for compute. The training-state memory minimum is ${fmt(result.memoryGpus)} GPUs. Take the larger count and round up to blocks of ${fmt(plan.block)} GPUs: ${fmt(result.gang)} per run. Multiply by ${fmt(plan.runs)} concurrent runs: <strong>${Number.isSafeInteger(result.totalGpus) ? `${fmt(result.totalGpus)} required training GPUs` : "GPU count outside the supported range"}</strong>.</li>
+        </ol><p class="help">This estimates dense-transformer pretraining only. Peak speed and MFU must refer to the same precision and configuration. The memory screen excludes activations and communication buffers; it does not prove fit. Training tokens/second benchmark pairs are used for H100 normalization, not to replace this MFU-based sizing calculation.</p>`;
+    }
+    return `<div class="logic-example">${serving}<h3>Repeat the calculation for every service</h3>
+      <p>Each model has its own request size, response-time target, GPU SKU and serving throughput. Do not add a render's work/second to a language model's requests/second and divide by one company-wide speed. Convert each service to GPUs first:</p>
+      ${table(["Service / SKU", "Planned peak work/s", "Work/s per replica", "Spare share", "GPUs per replica", "Required GPUs"], rows)}
+      <div class="logic-training">${training}</div>
+      <h3>The result for ${focused.month}, within the current filters</h3>
+      <p><strong>${fmt(focused.inference)} inference GPUs + ${fmt(focused.training)} scheduled training GPUs = <span id="logic-total-gpus">${fmt(focused.required)}</span> required GPUs${focused.physicalComplete ? "" : " (partial: some workloads cannot be sized)"}.</strong> Group these counts by owning organization and exact GPU SKU. Monthly planning assumes service peaks and same-month training can overlap; it does not credit shared idle time.</p>
+      <p>For each SKU: <code>usable supply = installed - unavailable - protected reserve + additions ready by that month</code>. Then <code>shortage = required GPUs - usable supply</code>. A positive shortage is the number to add or the demand to reschedule; spare capacity in another SKU is not an automatic substitute.</p>
+      <p>For a common growth index, multiply each workload's GPU count by its own selected-SKU/H100 throughput ratio, then add those H100 equivalents. Normalization compares the plan; it does not change the required SKU counts or normalize idle inventory.</p></div>`;
+  }
+  function forecastLogicPanel(workspace, report) {
+    return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Goal: know which GPU SKUs are needed, how many, and in which month the company will run short.</p></div></div>
+      <ol class="logic-steps">
+        <li><h3>1. Forecast each service's work</h3><p>Use traffic history or an entered demand plan. Apply that service's growth and launch traffic.</p></li>
+        <li><h3>2. Convert inference work to GPUs</h3><p>Use that model and SKU's benchmarked or entered throughput at the required response time. Keep spare headroom and round up to whole replicas.</p></li>
+        <li><h3>3. Add training separately</h3><p>Use model size, training tokens, deadline, memory, and peak computing speed x MFU. Round for topology and concurrent runs.</p></li>
+        <li><h3>4. Add up the company plan</h3><p>Add GPU counts, not unlike services' request rates. Roll up by organization, SKU and month, then compare with usable inventory.</p></li>
+      </ol>
+      <p class="logic-key"><strong>Inference uses throughput, not MFU. Training uses MFU.</strong> GPU-hours and GPU busy % describe observed usage; this forecast estimates capacity to provision, not future busy %. Busy % is not MFU.</p>
+      <details id="forecast-logic-details" ${$("#forecast-logic-details")?.open ? "open" : ""}><summary>Show the formulas and live calculation for the selected service and month</summary>
+        <div class="logic-formulas"><p><strong>Inference:</strong> <code>replicas = round up (peak work/s / (work/s per replica x usable capacity share))</code>; <code>GPUs = replicas x GPUs per replica</code>.</p>
+        <p><strong>Training:</strong> <code>work = 6 x parameters x training tokens</code>; <code>compute GPUs = round up (work / (active seconds x peak FLOP/s per GPU x MFU fraction))</code>. Use the larger compute/memory count, round to topology blocks, then multiply by concurrent runs.</p>
+        <p>For history-based services, compare a recent average with a weekly trend plus weekday pattern using 14 held-out days, refit, then size against the busiest predicted day of each month. At least 42 consecutive days are needed; up to 84 are used. Missing history requires an explicit demand plan, not an assumed zero.</p></div>
+        <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
+      </details></section>`;
+  }
+  function planningResults(workspace, report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter)) {
     const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
     const first = report.monthly[0], last = report.monthly.at(-1);
     const normalized = planningUnit === "h100";
@@ -254,10 +317,12 @@
     if (quick) planningQuickService = quick.id;
     const plans = planningPlans(state);
     const options = state.forecast || M.defaultForecast();
+    const report = M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter);
     return `<div class="planning-toolbar"><div class="planning-breadcrumb"><button class="text-button" data-planning-root>All organizations</button>${teamFilter !== "all" ? ` / <button class="text-button" data-drill-org="${esc(teamFilter)}">${esc(teamFilter)}</button>` : ""}${serviceFilter !== "all" ? ` / ${esc(state.services.find(s => s.id === serviceFilter).name)}` : ""}</div><label>Inspect month<select id="planning-month">${horizon.map(m => `<option ${m === planningMonth ? "selected" : ""}>${m}</option>`).join("")}</select></label><label>Chart units<select id="planning-unit"><option value="physical" ${planningUnit === "physical" ? "selected" : ""}>Physical GPUs</option><option value="h100" ${planningUnit === "h100" ? "selected" : ""}>H100 equivalents</option></select></label><label class="check-option"><input id="planning-training" type="checkbox" ${options.includeTraining ? "checked" : ""}> Include training</label><button class="text-button" data-view="capacity">Global traffic / efficiency adjustments</button></div>
+      ${forecastLogicPanel(state, report)}
       <div class="callout info">Build the plan from services upward. Edit a growth number or drag its slider; results preview immediately and save on release or when you leave the field. Drag training cards between months, or use their month selectors. The demo's benchmark pairs are illustrative, not NVIDIA performance claims.</div>
       <section class="panel"><div class="panel-heading"><div><h2>Set service growth</h2><p>Extra demand by month six, on top of the learned traffic trend. It compounds over six months; +0% keeps that trend. Launch traffic is added separately.</p></div></div><div class="panel-body planning-quick">${quick ? `<label>Service to adjust<select id="planning-quick-service">${services.map(s => `<option value="${esc(s.id)}" ${s.id === quick.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select><span class="help">${esc(quick.team)} / ${esc(skuName(quick.pool))}</span></label><div><label class="help">Extra demand by month six (%)</label><div class="growth-editor"><input type="range" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" data-service-growth="${esc(quick.id)}" aria-label="Growth slider for ${esc(quick.name)}"><input type="number" min="-90" max="300" step="0.1" value="${quick.scenarioGrowthPct ?? 0}" required data-service-growth="${esc(quick.id)}" aria-label="Growth percentage for ${esc(quick.name)}"></div></div><div><button class="text-button" data-edit-service="${esc(quick.id)}">Edit model inputs</button>${calibrationButton("inference", quick)}</div>` : '<p class="help">No inference service matches these filters. Training on this SKU is still included below.</p>'}</div><p id="planning-preview-status" class="panel-body help" role="status">Saved scenario. Change a slider to preview.</p></section>
-      <div id="planning-results">${planningResults(state)}</div>
+      <div id="planning-results">${planningResults(state, report)}</div>
       <section class="panel"><div class="panel-heading"><div><h2>Schedule training on top</h2><p>${options.includeTraining ? "Included in totals. Plans within a month are treated as concurrent." : "Excluded from totals. You can still edit or reschedule the roadmap."} Moves preserve the run's active days; impossible calendar moves are rejected.</p></div><button class="button subtle" data-action="training">Add training plan</button></div><div class="training-scroll"><div class="training-board">${horizon.map(m => `<section class="training-lane" data-training-drop="${m}" aria-label="Training scheduled for ${m}"><h3>${m}</h3>${plans.filter(t => t.month === m).map(t => `<article class="training-drag-card" draggable="true" data-training-drag="${esc(t.id)}"><span class="help">Drag to reschedule</span><h3>${esc(t.name)}</h3><p>${fmt(M.training(t).totalGpus)} GPUs<br><span class="help">${esc(skuName(t.pool))}</span></p><label class="help">Move to month<select data-training-month="${esc(t.id)}" aria-label="Move ${esc(t.name)} to month">${horizon.map(month => `<option ${month === m ? "selected" : ""}>${month}</option>`).join("")}</select></label><div class="form-actions"><button class="text-button" data-edit-training="${esc(t.id)}">Edit model</button>${calibrationButton("training", t)}</div></article>`).join("") || '<p class="help">Drop a training plan here.</p>'}</section>`).join("")}</div></div>${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon. Open Training roadmap to see them.</p>' : ""}</section>
       <section class="panel"><div class="panel-heading"><h2>How normalization works</h2></div><div class="panel-body description">For each workload: ratio = benchmark throughput per selected-SKU GPU / benchmark throughput per H100 SXM GPU. H100 equivalents = required GPUs x that ratio. Convert back for that same workload: equivalents / ratio. Compare identical model versions, precision, job sizes and response-time targets; enter full-replica throughput divided by its GPU count.<br>Inference uses fixed work items/second/GPU; training uses training tokens/second/GPU. Ratios are workload-specific, not a universal H100-to-B200 conversion. A GB200 superchip contains a CPU and two GPUs; it is not one interchangeable GPU.<br>Missing, changed or future-dated evidence makes normalized totals unavailable. Physical SKU demand remains visible. This index does not prove memory fit, interconnect compatibility, or that a job can move to another GPU.</div></section>`;
   }
@@ -277,7 +342,9 @@
       if (!save(next, "Service growth saved. SKU demand and organization totals updated.", false, false)) {render(); return;}
       status.textContent = "Scenario saved.";
     } else status.textContent = "Live preview - release the slider or leave the number field to save.";
-    $("#planning-results").innerHTML = planningResults(next);
+    const report = M.bottomUpForecast(next, serviceFilter, teamFilter, poolFilter);
+    $("#planning-results").innerHTML = planningResults(next, report);
+    $("#forecast-logic-example").innerHTML = forecastLogicExample(next, report);
   }
   function rescheduleTraining(id, targetMonth) {
     try {

@@ -53,6 +53,24 @@ The starting point is each service, not a company-wide GPU growth target:
 
 Open **Scenario planner**, the default page:
 
+The first page explains **How this capacity forecast is calculated** before the
+editing controls. It distinguishes inference throughput from training MFU, then
+shows a live worked example, a service-by-service conversion table, and the
+rollup into monthly GPU requirements and SKU shortages. Open **Show the formulas
+and live calculation** to inspect the numbers; they update with the selected
+service, month, growth, and filters.
+
+- **Inference uses serving throughput**, benchmarked or entered for that model
+  and SKU at its response-time target. Convert each service's work into GPU
+  replicas separately, then add GPU counts. Do not add unlike services' request
+  rates and divide by one company-wide throughput number.
+- **Dense training uses model work and MFU**, plus a deadline, memory screen,
+  topology rounding, and concurrent runs. Training throughput benchmark pairs
+  serve the normalization index; they do not replace the MFU-based sizing math.
+- **Capacity is not busy percentage.** GPU-hours and activity describe observed
+  usage. The forecast estimates capacity to provision and assumes monthly peaks
+  and scheduled training can overlap; it does not optimize their sharing.
+
 - Choose a service under **Set service growth**. Drag the slider or type a
   percentage. Results preview immediately; release the slider or leave the
   number field to save.
