@@ -99,6 +99,22 @@ service, month, growth, and filters.
   not a measurement of future capacity needs or a separate training-usage
   history. Missing observations stay blank. Historical assignments are recorded
   in physical GPUs; the H100-equivalent view does not guess historical ratios.
+- The chart includes **12 calendar months of actuals**, followed by the six-month
+  forecast. Directly underneath, **Actual usage vs previous year** shows each
+  month's recorded GPUs, the same month last year, and the gap in GPUs and
+  percent. Both periods use the same selected services. The latest partial
+  month is compared through the same day last year; complete calendar months
+  include all their days, including leap days.
+- Gaps are calculated only when both periods have daily records for every
+  selected service. Missing months remain blank; partial history is labeled.
+  A zero previous-year value has an absolute gap but no percentage growth.
+  These comparisons stay in physical GPUs even when the forecast chart uses
+  H100 equivalents. They are included in the forecast JSON export.
+- The updated demo contains daily synthetic history from **December 2024 through
+  November 9, 2026**, enough for all 12 prior-year comparisons. Existing saved
+  workspaces are not expanded or overwritten automatically. Import more history,
+  or use **Data & assumptions > Load NVIDIA workload demo** to replace a workspace
+  with the updated example after confirmation.
 - **Inference demand by service** is visible directly below the bottom-up demand
   chart, without opening organization drill-downs. It lists every service name,
   owning organization, exact SKU, current observed peak work/second, average

@@ -451,11 +451,45 @@
       if (!byDate.has(r.date)) byDate.set(r.date, []);
       byDate.get(r.date).push(r);
     }
-    const historical = [...new Set(records.map(r => r.date.slice(0, 7)))].sort().slice(-3).map(m => {
-      const days = [...byDate.entries()].filter(([d]) => d.startsWith(m));
-      const complete = days.every(([, rows]) => rows.length === services.length);
-      return {month: m, actual: complete ? Math.max(...days.map(([, rows]) =>
-        rows.reduce((n, r) => n + r.gpuHours / 24, 0))) : null, observedDays: days.length};
+    const latestDate = records.map(r => r.date).sort().at(-1);
+    const historyStart = new Date(`${state.startMonth}-01T00:00:00Z`);
+    historyStart.setUTCFullYear(historyStart.getUTCFullYear() - 1);
+    const window = (start, end) => {
+      const days = [...byDate.entries()].filter(([d]) => d >= start && d <= end);
+      const expectedDays = Math.round((Date.parse(end) - Date.parse(start)) / DAY) + 1;
+      const completeDays = days.filter(([, rows]) => rows.length === services.length).length;
+      return {actual: days.length && completeDays === days.length ? Math.max(...days.map(([, rows]) =>
+        rows.reduce((n, r) => n + r.gpuHours / 24, 0))) : null,
+        observedDays: days.length, completeDays, expectedDays, complete: completeDays === expectedDays};
+    };
+    const historical = months(historyStart.toISOString().slice(0, 7), 12).map(m => {
+      const end = new Date(`${m}-01T00:00:00Z`);
+      end.setUTCMonth(end.getUTCMonth() + 1);
+      end.setUTCDate(0);
+      const monthEnd = end.toISOString().slice(0, 10);
+      const partialMonth = latestDate?.startsWith(m) && latestDate < monthEnd;
+      const periodEnd = partialMonth ? latestDate : monthEnd;
+      const previousStart = new Date(`${m}-01T00:00:00Z`);
+      previousStart.setUTCFullYear(previousStart.getUTCFullYear() - 1);
+      const previousMonth = previousStart.toISOString().slice(0, 7);
+      const previousEnd = new Date(previousStart);
+      previousEnd.setUTCMonth(previousEnd.getUTCMonth() + 1);
+      previousEnd.setUTCDate(0);
+      if (partialMonth) previousEnd.setUTCDate(Math.min(Number(periodEnd.slice(8)), previousEnd.getUTCDate()));
+      const previousPeriodEnd = previousEnd.toISOString().slice(0, 10);
+      const current = window(`${m}-01`, periodEnd);
+      const previous = window(`${previousMonth}-01`, previousPeriodEnd);
+      const comparable = current.complete && previous.complete;
+      const growthPct = comparable ? growth(current.actual, previous.actual) : null;
+      return {month: m, ...current, periodEnd, previousMonth, previousPeriodEnd,
+        previousActual: previous.actual, previousCompleteDays: previous.completeDays,
+        previousExpectedDays: previous.expectedDays, comparisonComplete: comparable,
+        gap: comparable ? current.actual - previous.actual : null,
+        growthPct: Number.isFinite(growthPct) ? growthPct : null,
+        comparisonReason: !current.complete ? `Current period has ${current.completeDays}/${current.expectedDays} full-service days.` :
+          !previous.complete ? `Previous year has ${previous.completeDays}/${previous.expectedDays} full-service days.` :
+          previous.actual === 0 ? "Previous-year value is zero; percentage gap is unavailable." :
+          !Number.isFinite(growthPct) ? "Percentage gap exceeds the supported range." : ""};
     });
     return {options, services: evidence, monthly, historical};
   }
@@ -644,10 +678,12 @@
       profile: "Example requests/second for a fixed workload on this SKU. Match model, job size, software and response-time target.",
     }));
     const records = [];
-    for (let day = 0; day < 60; day++) {
+    const firstDay = Math.round((Date.UTC(2024, 11, 1) - Date.UTC(2026, 8, 11)) / DAY);
+    for (let day = firstDay; day < 60; day++) {
       const stamp = new Date(Date.UTC(2026, 8, 11) + day * DAY).toISOString().slice(0, 10);
       defs.forEach((d, i) => {
-        const peakRps = Math.round(d[7] * 4 * (0.72 + day * 0.0045) * (1 + 0.045 * Math.sin(day * 0.5 + i)));
+        const scale = day < 0 ? 0.72 * (1 + d[6] / 100) ** (day / 365) : 0.72 + day * 0.0045;
+        const peakRps = Math.round(d[7] * 4 * scale * (1 + 0.045 * Math.sin(day * 0.5 + i)));
         const allocated = Math.ceil(peakRps / d[5] * d[4] * 1.18 / 8) * 8;
         records.push({date: stamp, serviceId: d[0], gpuHours: allocated * 24,
           activity: Math.round(54 + i * 3 + 9 * Math.sin(day / 6 + i)),

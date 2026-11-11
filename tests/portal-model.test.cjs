@@ -5,7 +5,9 @@ const M = require("../portal/model.js");
 test("demo validates and has a synthetic 200,000-GPU inventory", () => {
   const s = M.demo();
   assert.equal(M.POOLS.reduce((n, p) => n + s.supply[p].installed, 0), 200000);
-  assert.equal(s.records.length, 420);
+  assert.equal(s.records.length, 4963);
+  assert.equal(s.records[0].date, "2024-12-01");
+  assert.equal(s.records.at(-1).date, "2026-11-09");
   assert.ok(s.records.every(r => r.source === "synthetic"));
   assert.equal(M.validate(JSON.parse(JSON.stringify(s))).services.length, 7);
 });
@@ -21,7 +23,7 @@ test("baseline uses only 28-day observed window before planning starts", () => {
   const before = M.inference(s, s.services[0], 0);
   s.records.push({serviceId: "assistant", date: "2027-01-01", gpuHours: 240, activity: 80, peakRps: 1e8, requests: 100, source: "user-entered"});
   assert.deepEqual(M.inference(s, s.services[0], 0), before);
-  s.startMonth = "2026-01";
+  s.startMonth = "2024-12";
   assert.equal(M.baseline(s, "assistant"), null);
 });
 
@@ -128,7 +130,7 @@ test("YoY requires complete matching coverage; missing history is unavailable", 
   ];
   assert.equal(M.comparePeriods(rows, "2026-11-01", "2026-11-02", 1), 100);
   assert.equal(M.comparePeriods(rows.slice(0, 3), "2026-11-01", "2026-11-02", 1), null);
-  assert.equal(M.comparePeriods(M.demo().records, "2026-11-01", "2026-11-02", 1), null);
+  assert.equal(M.comparePeriods(M.demo().records.filter(r => r.date >= "2026-01-01"), "2026-11-01", "2026-11-02", 1), null);
 });
 
 test("invalid inputs do not produce success-shaped defaults", () => {

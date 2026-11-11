@@ -14,6 +14,140 @@ function fixture(value = i => 1000 + i * 10, count = 84) {
   return state;
 }
 
+function assignmentFixture(currentMonth = "2026-04", currentDays = 30, previousDays = 30) {
+  const state = M.demo();
+  state.services = state.services.slice(0, 2);
+  state.training = [];
+  state.records = [];
+  const previousMonth = `${Number(currentMonth.slice(0, 4)) - 1}${currentMonth.slice(4)}`;
+  for (const [month, days, previous] of [[currentMonth, currentDays, false], [previousMonth, previousDays, true]]) {
+    for (let day = 1; day <= days; day++) {
+      state.services.forEach((s, i) => {
+        const gpus = previous ? 10 : (day + i) % 2 ? 10 : 30;
+        state.records.push({serviceId: s.id, date: `${month}-${String(day).padStart(2, "0")}`,
+          peakRps: 100, requests: 0, gpuHours: gpus * 24, activity: 70, source: "user-entered"});
+      });
+    }
+  }
+  return state;
+}
+
+test("demo exposes 12 chronological actual months with matching previous-year history", () => {
+  const history = M.capacityForecast(M.demo()).historical;
+  assert.equal(history.length, 12);
+  assert.deepEqual(history.map(m => m.month), M.months("2025-12", 12));
+  assert.ok(history.every(m => m.actual > 0 && m.previousActual > 0 && m.comparisonComplete));
+  assert.equal(history.at(-1).periodEnd, "2026-11-09");
+  assert.equal(history.at(-1).previousPeriodEnd, "2025-11-09");
+});
+
+test("annual gaps use simultaneous daily assignments, not the sum of separate service peaks", () => {
+  const row = M.capacityForecast(assignmentFixture()).historical.find(m => m.month === "2026-04");
+  assert.equal(row.actual, 40);
+  assert.equal(row.previousActual, 20);
+  assert.equal(row.gap, 20);
+  assert.equal(row.growthPct, 100);
+  assert.equal(row.completeDays, 30);
+  assert.equal(row.previousCompleteDays, 30);
+});
+
+test("missing entire months remain in the annual timeline as unavailable, not zero", () => {
+  const state = assignmentFixture();
+  state.records = state.records.filter(r => r.date.startsWith("2025"));
+  const history = M.capacityForecast(state).historical;
+  assert.equal(history.length, 12);
+  const row = history.find(m => m.month === "2026-04");
+  assert.equal(row.actual, null);
+  assert.equal(row.previousActual, 20);
+  assert.equal(row.gap, null);
+  assert.equal(row.growthPct, null);
+  assert.match(row.comparisonReason, /Current period has 0\/30/);
+});
+
+test("partial daily coverage keeps observed values but does not calculate misleading annual gaps", () => {
+  const state = assignmentFixture();
+  state.records = state.records.filter(r => r.date !== "2026-04-03");
+  const row = M.capacityForecast(state).historical.find(m => m.month === "2026-04");
+  assert.equal(row.actual, 40);
+  assert.equal(row.completeDays, 29);
+  assert.equal(row.gap, null);
+  assert.match(row.comparisonReason, /Current period has 29\/30/);
+  const previous = assignmentFixture();
+  previous.records = previous.records.filter(r => !(r.date === "2025-04-03" && r.serviceId === "assistant"));
+  const missing = M.capacityForecast(previous).historical.find(m => m.month === "2026-04");
+  assert.equal(missing.previousActual, null);
+  assert.equal(missing.growthPct, null);
+  assert.match(missing.comparisonReason, /Previous year has 29\/30/);
+});
+
+test("month-to-date comparison uses the same ending day in the previous year", () => {
+  const state = assignmentFixture("2026-11", 9, 30);
+  state.records.filter(r => r.date.startsWith("2025-11") && r.date > "2025-11-09")
+    .forEach(r => { r.gpuHours = 1000 * 24; });
+  const row = M.capacityForecast(state).historical.at(-1);
+  assert.equal(row.expectedDays, 9);
+  assert.equal(row.previousExpectedDays, 9);
+  assert.equal(row.previousActual, 20);
+  assert.equal(row.gap, 20);
+  assert.equal(row.growthPct, 100);
+  assert.equal(row.previousPeriodEnd, "2025-11-09");
+});
+
+test("complete leap-year months compare with the complete corresponding previous month", () => {
+  const state = assignmentFixture("2024-02", 29, 28);
+  state.startMonth = "2024-03";
+  const row = M.capacityForecast(state).historical.at(-1);
+  assert.equal(row.month, "2024-02");
+  assert.equal(row.expectedDays, 29);
+  assert.equal(row.previousExpectedDays, 28);
+  assert.equal(row.previousPeriodEnd, "2023-02-28");
+  assert.equal(row.growthPct, 100);
+});
+
+test("zero previous-year values allow an absolute gap but never invent percentage growth", () => {
+  const state = assignmentFixture();
+  state.records.filter(r => r.date.startsWith("2025")).forEach(r => { r.gpuHours = 0; });
+  const row = M.capacityForecast(state).historical.find(m => m.month === "2026-04");
+  assert.equal(row.previousActual, 0);
+  assert.equal(row.gap, 40);
+  assert.equal(row.growthPct, null);
+  assert.match(row.comparisonReason, /zero/);
+  state.records.forEach(r => { r.gpuHours = r.date.startsWith("2026") ? 0 : 10 * 24; });
+  const decline = M.capacityForecast(state).historical.find(m => m.month === "2026-04");
+  assert.equal(decline.actual, 0);
+  assert.equal(decline.growthPct, -100);
+});
+
+test("historical comparisons use the same service, organization and SKU filters as the forecast", () => {
+  const state = assignmentFixture();
+  const get = report => report.historical.find(m => m.month === "2026-04");
+  const selected = get(M.capacityForecast(state, "assistant"));
+  assert.equal(selected.actual, 30);
+  assert.equal(selected.previousActual, 10);
+  assert.equal(selected.growthPct, 200);
+  assert.deepEqual(get(M.capacityForecast(state, "all", "Language & Reasoning")), selected);
+  assert.equal(get(M.capacityForecast(state, "all", "all", "H100-PCIE-80GB")).actual, 30);
+});
+
+test("unrepresentable annual percentage gaps remain unavailable with an explicit reason", () => {
+  const state = assignmentFixture();
+  state.records.filter(r => r.date.startsWith("2025")).forEach(r => { r.gpuHours = 1e-310; });
+  const row = M.capacityForecast(state).historical.find(m => m.month === "2026-04");
+  assert.ok(row.previousActual > 0);
+  assert.equal(row.growthPct, null);
+  assert.match(row.comparisonReason, /supported range/);
+});
+
+test("annual history is immutable, ignores post-plan records and does not change with scenario adjustments", () => {
+  const state = assignmentFixture(), original = JSON.stringify(state);
+  const before = M.capacityForecast(state).historical;
+  assert.equal(JSON.stringify(state), original);
+  state.forecast = {...M.defaultForecast(), trafficAdjustmentPct: 50};
+  state.records.push({...state.records[0], date: "2026-12-01", gpuHours: 1e9});
+  state.records.reverse();
+  assert.deepEqual(M.capacityForecast(state).historical, before);
+});
+
 test("forecast learns a rising trend from history rather than the manual annual rate", () => {
   const state = fixture();
   const forecast = M.trafficForecast(state, state.services[0].id);
