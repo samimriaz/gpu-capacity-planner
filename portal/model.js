@@ -131,6 +131,7 @@
     }
     if (state?.version === 3) {
       if (state.trainingAllocationBasis === undefined) state = {...state, trainingAllocationBasis: "current-demand"};
+      if (state.trainingProjects === undefined) state = {...state, trainingProjects: []};
       const defaults = GPU_PURCHASE_ASSUMPTIONS.map(({pool, usdPerGpu}) => ({pool, usdPerGpu}));
       if (state.gpuPurchasePrices === undefined) {
         state = {...state, gpuPurchasePrices: defaults,
@@ -191,15 +192,10 @@
     if (r.requests > r.peakRps * 86400 + 1) fail("Daily requests cannot exceed peak RPS multiplied by a day.");
     if (!["synthetic", "user-entered"].includes(r.source)) fail("Unknown consumption provenance.");
   }
-  function trainingCheck(t, services) {
-    text(t.id, "Plan ID"); text(t.name, "Training plan name");
-    if (!services.some(s => s.id === t.serviceId)) fail("Training plan references an unknown service.");
-    pool(t.pool); month(t.month);
+  function trainingSizingCheck(t) {
+    pool(t.pool);
     number(t.parametersB, "Parameters (billions)", 0.001, 10000);
     number(t.tokensB, "Training tokens (billions)", 0.001, 1e7);
-    number(t.days, "Active training days", 0.01, 31);
-    const daysInMonth = new Date(Date.UTC(+t.month.slice(0, 4), +t.month.slice(5, 7), 0)).getUTCDate();
-    if (t.days > daysInMonth) fail("Active training days exceed days in the chosen month.");
     number(t.peakTflops, "Dense peak TFLOP/s per GPU", 1, 100000);
     number(t.mfu, "Model FLOPs utilization %", 1, 100);
     number(t.memoryGB, "Memory per GPU (GB)", 1, 10000);
@@ -207,6 +203,15 @@
     if (hardware.memoryGB !== null && t.memoryGB > hardware.memoryGB) fail(`Memory budget exceeds ${hardware.name}'s ${hardware.memoryGB} GB per GPU.`);
     number(t.bytesPerParameter, "Training-state bytes per parameter", 1, 100);
     number(t.block, "Topology block size", 1, 65536, true);
+  }
+  function trainingCheck(t, services) {
+    text(t.id, "Plan ID"); text(t.name, "Training plan name");
+    if (!services.some(s => s.id === t.serviceId)) fail("Training plan references an unknown service.");
+    trainingSizingCheck(t);
+    month(t.month);
+    number(t.days, "Active training days", 0.01, 31);
+    const daysInMonth = new Date(Date.UTC(+t.month.slice(0, 4), +t.month.slice(5, 7), 0)).getUTCDate();
+    if (t.days > daysInMonth) fail("Active training days exceed days in the chosen month.");
     number(t.runs, "Concurrent runs", 1, 1000, true);
     if (t.scenarioGrowthPct !== undefined) number(t.scenarioGrowthPct, "Extra concurrent training runs by month six %", -90, 300);
   }
@@ -240,6 +245,12 @@
       if (t.normalization !== undefined) normalizationCheck(t.normalization);
     });
     if (new Set(state.training.map(t => t.id)).size !== state.training.length) fail("Training plan IDs must be unique.");
+    if (!Array.isArray(state.trainingProjects) || state.trainingProjects.length > 1000) fail("At most 1,000 new training projects are supported.");
+    for (const project of state.trainingProjects) {
+      trainingProject(project);
+      if (!state.services.some(s => s.id === project.serviceId)) fail("Training project references an unknown service.");
+    }
+    if (new Set(state.trainingProjects.map(p => p.id)).size !== state.trainingProjects.length) fail("Training project IDs must be unique.");
     if (state.trainingHistory !== undefined) trainingHistoryCheck(state.trainingHistory, state.services);
     if (state.gpuPurchasePriceVersion !== undefined) number(state.gpuPurchasePriceVersion, "GPU purchase price version", 1, 1, true);
     if (state.gpuPurchasePrices !== undefined) {
@@ -797,23 +808,74 @@
     const next = {...state, training: state.training.map(t => t.id === id ? {...t, month: targetMonth} : t)};
     return validate(next);
   }
+  function trainingSizing(plan) {
+    const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
+    const effectiveFlops = plan.peakTflops * 1e12 * plan.mfu / 100;
+    const computeGpus = Math.ceil(flops / (plan.days * 86400 * effectiveFlops));
+    const memoryGpus = Math.ceil(plan.parametersB * 1e9 * plan.bytesPerParameter / (plan.memoryGB * 1e9));
+    const gang = Math.ceil(Math.max(computeGpus, memoryGpus) / plan.block) * plan.block;
+    return {flops, effectiveFlops, computeGpus, memoryGpus, gang};
+  }
   function training(plan, startMonth) {
     if (startMonth !== undefined) month(startMonth);
     const elapsed = startMonth === undefined ? 0 : Math.max(0, Math.min(6,
       (+plan.month.slice(0, 4) - +startMonth.slice(0, 4)) * 12 + +plan.month.slice(5, 7) - +startMonth.slice(5, 7) + 1));
     const growthFactor = (1 + (plan.scenarioGrowthPct ?? 0) / 100) ** (elapsed / 6);
     const plannedRuns = Math.ceil(plan.runs * growthFactor);
-    const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
-    const effectiveFlops = plan.peakTflops * 1e12 * plan.mfu / 100;
-    const computeGpus = Math.ceil(flops / (plan.days * 86400 * effectiveFlops));
-    const memoryGpus = Math.ceil(plan.parametersB * 1e9 * plan.bytesPerParameter / (plan.memoryGB * 1e9));
-    const gang = Math.ceil(Math.max(computeGpus, memoryGpus) / plan.block) * plan.block;
+    const {flops, effectiveFlops, computeGpus, memoryGpus, gang} = trainingSizing(plan);
     return {
       flops, computeGpus, memoryGpus, gang, plannedRuns, baseRuns: plan.runs, growthFactor, totalGpus: gang * plannedRuns,
       activeRuntimeDays: flops / (gang * effectiveFlops) / 86400,
       reservedGpuHours: gang * plannedRuns * plan.days * 24,
       warning: "Dense pretraining only. Memory screen excludes activations/buffers; MFU and topology feasibility need calibration.",
     };
+  }
+  function trainingProject(plan) {
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) fail("Training project must be an object.");
+    text(plan.id, "Project ID"); text(plan.name, "Project name"); text(plan.serviceId, "Owning service");
+    if (plan.incremental !== true) fail("Confirm that the project is new demand not already included in the historical baseline.");
+    trainingSizingCheck(plan);
+    if (skuInfo(plan.pool).legacy) fail("New training projects require an exact GPU SKU.");
+    date(plan.startDate);
+    if (plan.startDate < "1000-01-01") fail("Project start date must be in year 1000 or later.");
+    number(plan.days, "Training days per run", 1, 365, true);
+    number(plan.runs, "Total project runs", 1, 1000, true);
+    number(plan.concurrentRuns, "Maximum concurrent runs", 1, plan.runs, true);
+    const sizing = trainingSizing(plan);
+    const peakGpus = sizing.gang * plan.concurrentRuns;
+    const reservedGpuHours = sizing.gang * plan.runs * plan.days * 24;
+    number(peakGpus, "Project peak GPU count", 1, Number.MAX_SAFE_INTEGER, true);
+    number(reservedGpuHours, "Project reserved GPU-hours", 1, Number.MAX_SAFE_INTEGER, true);
+    const batches = Math.ceil(plan.runs / plan.concurrentRuns);
+    const start = Date.parse(plan.startDate), end = start + batches * plan.days * DAY;
+    if (end > Date.parse("9999-12-31")) fail("Project schedule must finish before the end of year 9999.");
+    const fullBatches = Math.floor(plan.runs / plan.concurrentRuns);
+    const fullEnd = start + fullBatches * plan.days * DAY;
+    const stamp = value => new Date(value).toISOString().slice(0, 10);
+    const schedule = [{startDate: plan.startDate, endDate: stamp(fullEnd), gpus: peakGpus}];
+    const remaining = plan.runs % plan.concurrentRuns;
+    if (remaining) schedule.push({startDate: stamp(fullEnd), endDate: stamp(end), gpus: sizing.gang * remaining});
+    return {...plan, ...sizing, peakGpus, reservedGpuHours, batches, schedule,
+      endDate: stamp(end), lastActiveDate: stamp(end - DAY),
+      warning: "Dense pretraining estimate. Validate MFU at scale, topology and memory including activations/buffers. Dates reserve full run windows; no cluster placement is guaranteed."};
+  }
+  function trainingProjectPeak(projects, targetMonth) {
+    month(targetMonth);
+    const start = Date.parse(`${targetMonth}-01`), end = Date.parse(`${shiftedMonth(targetMonth, 1)}-01`);
+    const events = new Map();
+    for (const project of projects) for (const interval of project.schedule) {
+      const from = Math.max(start, Date.parse(interval.startDate)), to = Math.min(end, Date.parse(interval.endDate));
+      if (from >= to) continue;
+      events.set(from, (events.get(from) || 0) + interval.gpus);
+      events.set(to, (events.get(to) || 0) - interval.gpus);
+    }
+    let current = 0, peak = 0;
+    for (const [, change] of [...events].sort((a, b) => a[0] - b[0])) {
+      current += change;
+      if (!Number.isSafeInteger(current)) return null;
+      peak = Math.max(peak, current);
+    }
+    return peak;
   }
   function portfolio(state, selectedId = "all", selectedTeam = "all") {
     return months(state.startMonth).map((m, index) => {
@@ -921,6 +983,9 @@
     const window = months(state.startMonth, PLANNER_MAX_MONTHS_AHEAD + 1);
     const targetIndex = window.indexOf(targetMonth);
     const futureMonths = window.slice(0, Math.max(6, targetIndex + 1));
+    const trainingProjects = (state.trainingProjects || [])
+      .filter(p => owners.some(s => s.id === p.serviceId) && (selectedPool === "all" || p.pool === selectedPool))
+      .map(p => ({...trainingProject(p), team: owners.find(s => s.id === p.serviceId).team}));
     const allocations = recordedAllocations(state, owners.map(s => s.id));
     const demandRows = new Map();
     for (const row of state.records) {
@@ -989,6 +1054,8 @@
     for (const s of owners) {
       if (![...trainingGroups.values()].some(g => g.owner.id === s.id)) addGroup(s.id, s.pool);
     }
+    const baselinePools = new Set([...inferenceRows.map(r => r.pool), ...[...trainingGroups.values()].map(g => g.pool)]);
+    trainingProjects.forEach(p => addGroup(p.serviceId, p.pool));
     const trainingRows = [...trainingGroups.values()].filter(g => selectedPool === "all" || g.pool === selectedPool).map(({owner: s, pool: p}) => {
       const rows = (state.trainingHistory || []).filter(r => r.serviceId === s.id && r.pool === p);
       const byMonth = new Map(rows.map(r => [r.month, r]));
@@ -1001,14 +1068,35 @@
         allocated: assumeTrainingDemand ? current?.peakGpus ?? null : recordedAllocated,
         recordedAllocated, allocationSource: assumeTrainingDemand ? "assumed-current-demand" : "recorded-allocation",
         baselineMonth: latestMonth, synthetic: before.some(r => r.source === "synthetic")});
+      const projects = trainingProjects.filter(project => project.serviceId === s.id && project.pool === p);
       row.future = futureMonths.map((m, i) => {
         const estimate = row.current === null || row.growthPct === null ? null :
           plannerCeil(row.current * (1 + row.growthPct / 100) ** ((i + 1) / 6));
-        const gpus = Number.isSafeInteger(estimate) ? estimate : null;
-        return {month: m, value: gpus, gpus, gpusP50: gpus};
+        const baselineGpus = Number.isSafeInteger(estimate) ? estimate : null;
+        const projectGpus = trainingProjectPeak(projects, m);
+        const total = completeSum([baselineGpus, projectGpus]);
+        const gpus = Number.isSafeInteger(total) ? total : null;
+        return {month: m, value: gpus, gpus, gpusP50: gpus, baselineGpus,
+          baselineGrowth: baselineGpus === null ? null : baselineGpus - row.current, projectGpus};
       });
       if (!row.reason && row.future.some(m => m.gpus === null)) row.reason = "GPU count exceeds the supported range.";
       return row;
+    });
+    const trainingProjection = futureMonths.map((m, i) => {
+      const pools = [...new Set(trainingRows.map(r => r.pool))].map(p => {
+        const items = trainingRows.filter(r => r.pool === p);
+        const current = completeSum(items.map(r => r.current));
+        const baselineGpus = completeSum(items.map(r => r.future[i].baselineGpus));
+        const projectGpus = trainingProjectPeak(trainingProjects.filter(project => project.pool === p), m);
+        const total = completeSum([baselineGpus, projectGpus]);
+        return {pool: p, current, baselineGpus, baselineGrowth: current === null || baselineGpus === null ? null : baselineGpus - current,
+          projectGpus, forecast: Number.isSafeInteger(total) ? total : null};
+      });
+      return {month: m, pools, ...Object.fromEntries(["current", "baselineGpus", "baselineGrowth", "projectGpus", "forecast"]
+        .map(key => {
+          const value = completeSum(pools.map(p => p[key]));
+          return [key, Number.isSafeInteger(value) ? value : null];
+        }))};
     });
     const rows = [...inferenceRows, ...trainingRows];
     for (const row of rows) {
@@ -1022,6 +1110,13 @@
       const result = Object.fromEntries(["allocated", "forecast", "gap", "additionalGpus", "costUsd"]
         .map(key => [key, completeSum(items.map(item => item[key]))]));
       result.costReason = [...new Set(items.map(item => item.costReason).filter(Boolean))].join(" ");
+      for (const key of ["allocated", "forecast", "gap", "additionalGpus"]) {
+        if (result[key] !== null && !Number.isSafeInteger(result[key])) {
+          result[key] = null;
+          result.costUsd = null;
+          result.costReason = "GPU count exceeds the supported range.";
+        }
+      }
       if (result.costUsd !== null && result.costUsd > Number.MAX_SAFE_INTEGER / 100) {
         result.costUsd = null;
         result.costReason = "Cost exceeds supported currency precision.";
@@ -1032,15 +1127,18 @@
       const selected = rows.filter(r => r.pool === p);
       const current = segmentCapacity(state, p, selectedId, selectedTeam);
       const entered = ["inference", "training"].filter(kind =>
-        !(kind === "training" && assumeTrainingDemand) && current[`${kind}Source`] === "entered-allocation");
+        !(kind === "training" && assumeTrainingDemand) && !(kind === "inference" && !baselinePools.has(p)) &&
+        current[`${kind}Source`] === "entered-allocation");
       const unitPriceUsd = state.gpuPurchasePrices?.find(price => price.pool === p)?.usdPerGpu ?? null;
       const kinds = Object.fromEntries(["inference", "training"].map(kind => {
         const items = selected.filter(r => r.kind === kind);
         const allocated = entered.includes(kind) ? current[kind] : completeSum(items.map(r => r.allocated));
-        const forecast = completeSum(items.map(r => r.forecast));
+        const forecast = kind === "training" ?
+          trainingProjection[targetIndex].pools.find(row => row.pool === p)?.forecast ?? (items.length ? null : 0) :
+          completeSum(items.map(r => r.forecast));
         const gap = allocated === null || forecast === null ? null : forecast - allocated;
         const additionalGpus = gap === null ? null : Math.max(0, gap);
-        let costReason = additionalGpus === null ? "Demand or allocation inputs are missing." :
+        let costReason = additionalGpus === null ? "Demand or allocation inputs are missing or exceed the supported GPU range." :
           additionalGpus > 0 && unitPriceUsd === null ? "Enter a purchase price for this SKU." : "";
         let costUsd = costReason ? null : additionalGpus === 0 ? 0 : additionalGpus * unitPriceUsd;
         if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd > Number.MAX_SAFE_INTEGER / 100)) {
@@ -1073,11 +1171,13 @@
     const series = kind => {
       const items = rows.filter(r => r.kind === kind);
       return [...historicalMonths.map((m, i) => ({month: m, value: items.length ? completeSum(items.map(r => r.history[i].value)) : null})),
-        ...futureMonths.map((m, i) => ({month: m, value: items.length ? completeSum(items.map(r => r.future[i].value)) : null}))];
+        ...futureMonths.map((m, i) => ({month: m, value: items.length ?
+          kind === "training" ? trainingProjection[i].forecast : completeSum(items.map(r => r.future[i].value)) : null}))];
     };
     return {rows, pools, segments, physical, trainingAllocationBasis, costBasis: {currency: "USD", type: "one-time GPU hardware purchase",
       allocationPolicy: "Retain allocations; positive shortages by SKU and workload segment are not offset by surpluses."},
-      inferenceRows, trainingRows, historicalMonths, futureMonths, targetMonth,
+      inferenceRows, trainingRows, trainingProjects, trainingProjection, historicalMonths, futureMonths, targetMonth,
+      trainingProjectPolicy: "Incremental projects only. Baseline demand plus growth is held constant within each month. New project batches use UTC dates with exclusive end dates. Monthly project peaks are calculated jointly per SKU; individual service peaks are not additive across services.",
       series: {inference: series("inference"), training: series("training")},
       normalizedAllocated, normalizedForecast,
       normalizedGap: normalizedAllocated === null || normalizedForecast === null ? null : normalizedForecast - normalizedAllocated};
@@ -1157,7 +1257,7 @@
   const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
     normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, recordedAllocations, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo,
-    COMPUTE_SPECS, PLANNER_MAX_MONTHS_AHEAD, GPU_PURCHASE_ASSUMPTIONS, computeEquivalent, plannerForecast, demoTrainingHistory, importTrainingHistory};
+    COMPUTE_SPECS, PLANNER_MAX_MONTHS_AHEAD, GPU_PURCHASE_ASSUMPTIONS, computeEquivalent, plannerForecast, trainingProject, trainingProjectPeak, demoTrainingHistory, importTrainingHistory};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

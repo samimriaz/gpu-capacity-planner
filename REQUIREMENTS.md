@@ -53,11 +53,31 @@ architecture without agreement.
 - Growth inputs describe a six-month change. For later dates, continue that
   same compounded pace, without treating it as a monthly rate or counting it
   twice. For example, +20% per six months implies +44% after twelve months.
-- Training demand comes from scheduled plans. Do not invent recurring runs
-  in months without scheduled work.
+- Training forecast = current historical baseline + baseline growth + new
+  parameter-sized training projects. Keep these three components visible.
+  Baseline growth must not be applied again to new projects.
+- Let a service/team own multiple named training projects, with editable model
+  parameters, tokens per run, days per run, exact GPU SKU, peak training
+  throughput, MFU, memory assumptions, and topology block size.
+- Include only new projects not already covered by baseline history. Require
+  explicit confirmation of this when entering a project. Do not automatically
+  add retained legacy roadmap plans to the current planner.
+- Schedule projects from a start date and training duration. Users enter total
+  runs and maximum concurrent runs; schedule batches back-to-back, including
+  a smaller final batch when necessary. Do not invent recurring runs.
+- Sum new project GPUs only during overlapping dates and take the monthly
+  peak jointly for each SKU across services/teams. Add that peak to the grown
+  historical baseline for that SKU. Sum SKU requirements without substituting
+  GPU types. Individual service peaks need not sum to the organization total.
+- Preserve current allocations and inference logic. Update training gaps,
+  purchase estimates, charts, normalized comparisons and exports consistently.
+  Save project inputs with the workspace and support editing/removal.
 
 ## 3. Confirmed presentation and saving requirements
 
+- Label training throughput "Peak training compute per GPU (TFLOP/s)".
+  Explain training precision, non-sparse performance and the separate MFU
+  adjustment. This wording change must not alter saved inputs or defaults.
 - Name the application CapacityIQ, with the subtitle GPU Planning & Forecasting.
   Update visible branding and workspace export filenames while preserving
   compatibility with existing saved workspaces and import formats.

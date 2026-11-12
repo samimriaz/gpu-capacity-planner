@@ -16,15 +16,17 @@ Help infrastructure teams answer one question:
 **How many GPUs will the company need in the selected month, and where will
 we run short?**
 
-The tool learns from each service's traffic history and forecasts GPU demand.
-Users can adjust growth assumptions and serving performance, and import
-inference and training demand history.
+The platform supports training-heavy capacity planning while keeping inference
+separate. It combines historical demand, editable baseline growth, and new
+parameter-sized training projects owned by service teams. Users can adjust
+serving performance and import inference and training demand history.
 
 It helps them understand:
 
 - Which services and teams use GPUs today.
 - How usage and customer traffic are growing.
 - How historical training demand is growing.
+- How new projects, deadlines and overlapping runs change training requirements.
 - Whether current allocations cover those needs.
 
 The default **Capacity planner** has Overview, Inference, and Training tabs.
@@ -46,6 +48,63 @@ and service history.
 [Screenshots](#screenshots) |
 [Run locally](#run-the-portal) |
 [Limitations](#what-it-does-not-do-yet)
+
+## Forecast logic at a glance
+
+**Training requirement = current baseline + growth from baseline + new project peak.**
+
+1. **Establish the baseline.** Use each service/SKU's peak GPU demand in the
+   latest month before planning starts. Missing history is unavailable, not
+   zero. Changing the target month does not move that baseline.
+2. **Project existing demand.** By default, convert observed year-over-year
+   growth into a six-month rate: `sqrt(1 + YoY / 100) - 1`. Users can override
+   that rate. For forecast month index `i` (first month = 1), multiply current
+   demand by `(1 + sixMonthGrowthPct / 100)^(i / 6)` and round up per service/SKU.
+   For example, +44% YoY implies +20% per six months.
+3. **Size new training projects.** Estimate work as `6 * parameters * tokens`
+   for dense-transformer pretraining. Divide by each GPU's effective compute
+   over the run deadline. Check training-state memory separately, take the
+   larger count, and round up to the configured GPU allocation block.
+   [See the formulas and assumptions](#new-training-projects).
+4. **Schedule actual overlap.** Batch total runs using the maximum concurrency.
+   Start the next batch when the previous run window ends; reduce GPU demand
+   for a partial last batch. Add only simultaneously active project GPUs,
+   taking the monthly peak jointly for each exact SKU. Project demand is not
+   multiplied by baseline growth and must not already be in the baseline.
+5. **Calculate gaps and purchase estimates.** Default training allocation equals
+   current demand, with no spare capacity assumed; recorded allocations remain
+   available as an alternative. `Gap = required - allocated baseline`.
+   Purchase units sum positive gaps separately by SKU and workload segment;
+   multiply by editable per-SKU USD prices. This is GPU-only hardware cost,
+   not a server or data-center budget.
+6. **Keep inference and comparisons distinct.** Inference uses projected peak
+   RPS, serving throughput, headroom, whole model instances and a historical
+   high-demand P90 allowance where available. H100 equivalents are a separate
+   approximate FP32 comparison index, not physical GPUs to purchase or measured
+   training performance.
+
+### Worked training scenario
+
+The [training screenshots](#screenshots) use the synthetic December 2026 demo:
+
+- Current training baseline: **5,227 GPUs**.
+- Growth from that baseline: **147 GPUs**, giving **5,374 GPUs**.
+- New H200 project: **70B parameters**, **1T tokens per run**, **12 days/run**,
+  **989 TFLOP/s/GPU**, **40% MFU**, **141 GB/GPU**, **16 bytes/parameter**,
+  and a **256-GPU block**. Compute requires **1,024 GPUs/run**; the simplified
+  memory screen requires **8**, so compute dominates.
+- Three runs at concurrency two occupy December 1-24: **2,048 GPUs** for the
+  first batch, then **1,024 GPUs** for the final run.
+- A second example project uses **1,024 GPUs** from December 25 to January 5.
+  It does not overlap the first project, so December's joint project peak is
+  **2,048**, not **3,072 GPUs**.
+- Total December training requirement: **5,227 + 147 + 2,048 = 7,422 GPUs**.
+  Under the no-spare baseline, the training gap is **2,195 GPUs**.
+
+These are illustrative planning inputs, not a validated training benchmark.
+The memory screen excludes activations and buffers. MFU at scale, training
+precision, parallelism and topology must be validated before procurement.
+There is no live cluster integration or reservation action.
 
 ## Current capacity planner
 
@@ -98,7 +157,9 @@ The agreed behavior is recorded in [REQUIREMENTS.md](REQUIREMENTS.md).
   selected date. GPU sizing still uses peak traffic,
   service throughput, headroom, and the historical P90 allowance when available.
 - **Training:** the same history/projection layout, using recorded peak
-  concurrent GPU demand, not inference traffic or residual inventory.
+  concurrent GPU demand plus new parameter-sized training projects, not inference
+  traffic or residual inventory. The Training tab supports multiple projects
+  per service/team, with previews and saved create/edit/remove operations.
 - **Forecast for which month?** selects a target from the planning start through
   the same calendar month two years later, inclusive. For a December 2026 start,
   December 2028 is selectable. Choosing December shows December's GPU requirement; choosing May
@@ -125,20 +186,98 @@ The agreed behavior is recorded in [REQUIREMENTS.md](REQUIREMENTS.md).
 - Inference projects both average and peak traffic with the same growth factor.
   Its P90 allowance applies to peak GPU sizing, not the displayed mean RPS.
   The new planner does not stack the advanced scenario's traffic adjustment,
-  throughput adjustment, launch traffic, or scheduled training plans.
+  throughput adjustment, launch traffic, or legacy scheduled training plans.
+  New incremental projects entered in the Training tab are included separately.
 - Training demand grows from the latest monthly peak and rounds up to whole
-  GPUs. The sum of service peaks is conservative: peaks need not coincide.
+  GPUs. The historical baseline sums service peaks conservatively; they need
+  not coincide. Dated new project demand is added using concurrent monthly
+  peaks by SKU, not the sum of each project's or service's separate peak.
   The default training allocation baseline equals current pre-plan GPU demand,
   assuming no spare capacity. This is not a measured allocation or the future
   forecast. Inference retains its existing allocation calculation.
 - The planner tabs show all services, organizations, and SKUs without a filter
   bar or hidden scope. Data & assumptions retains its filters. The Overview is
-  read-only. Save/export include the new growth inputs and history.
+  read-only. Save/export include growth inputs, history and new project inputs.
 - Applicable company allocation corrections remain in company totals. They are
   not assigned to service rows without ownership data; the UI labels this
   difference. Training corrections are preserved but ignored in the default
   no-spare scenario; selecting recorded allocations restores their use.
   Scoped inference views retain their own recorded allocations.
+
+### New training projects
+
+In **Capacity planner > Training > New training projects**, add multiple named
+projects for an owning service/team. Preview the GPU requirement before saving,
+then edit or remove a project using its row actions. Register additional
+services/teams through Data & assumptions.
+
+The selected-month breakdown is:
+
+`current baseline + baseline growth + new project peak = training GPU requirement`
+
+Each project records parameters in billions, training tokens **per run** in
+billions, a UTC start date, a deadline in whole days per run, total runs, maximum
+concurrent runs, an exact GPU SKU, precision-matched dense peak TFLOP/s/GPU,
+MFU, memory budget, training-state bytes/parameter and a topology block.
+The editor requires confirmation that this is **new demand not already included
+in the historical baseline**. Projects are not multiplied by baseline growth.
+When refreshing historical data, remove incremental projects now included in
+that baseline; project membership in historical measurements cannot be inferred
+automatically.
+
+Sizing reuses the existing dense-transformer formula:
+
+```
+work = 6 * parameters * tokens
+compute GPUs = ceil(work / (days * 86400 * peak FLOPs/sec/GPU * MFU fraction))
+memory GPUs = ceil(parameters * training-state bytes/parameter / memory bytes/GPU)
+GPUs per run = ceil(max(compute GPUs, memory GPUs) / block) * block
+```
+
+Memory is only a lower-bound screen: activations, buffers, sharding and topology
+feasibility need validation. MFU must be calibrated at the intended scale. Peak
+training throughput is entered explicitly; the FP32 normalization index is not
+used for training sizing. SKU changes refill memory and clear peak throughput.
+The field is labeled **Peak training compute per GPU (TFLOP/s)**. Enter the
+theoretical non-sparse rating at the training precision, before MFU. For H200
+SXM BF16/FP16, **989 TFLOP/s** is a rounded planning value; NVIDIA's
+[H200 specifications](https://www.nvidia.com/en-us/data-center/h200/) list
+1,979 TFLOP/s with sparsity, approximately twice the dense rate. Do not use
+989 for every GPU or precision, or enter an already MFU-adjusted throughput.
+The guidance does not prefill or change the saved throughput input.
+
+Runs start in back-to-back batches of at most `concurrentRuns`. Each batch
+reserves its GPUs for the full configured run window; a smaller final batch
+uses only the remaining runs. For example, 5 runs at concurrency 2 with 4 days
+per run occupy 12 days, with GPU demand proportional to 2, 2 and 1 active runs.
+Dates use UTC calendar days with start inclusive and end exclusive; the UI
+shows the inclusive last active date. Projects can cross month and year
+boundaries, and unscheduled months add no project demand.
+
+For each month and SKU, the model holds the grown baseline constant and takes
+the peak of all overlapping project schedules in that scope. Two same-SKU
+projects on non-overlapping dates reuse GPU capacity rather than adding their
+individual peaks. Different SKUs still sum, because they cannot substitute for
+one another. Service-row peaks can therefore differ from the sum used in the
+company SKU total. This is a capacity scenario, not a cluster scheduler or
+placement guarantee; inter-project dependencies, queue delays, retries, setup
+time and resource contention are not simulated.
+
+Missing baseline history/growth is not replaced with zero merely because a
+project exists. The project requirement remains visible, but the full forecast
+stays unavailable until the service/SKU baseline is supplied. Import an explicit
+zero-demand record and enter growth if no current demand exists. Recorded
+allocations, inference and legacy roadmap plans are preserved.
+
+Workspace JSON stores `trainingProjects`; older workspaces upgrade to an empty
+list and are not automatically populated from legacy `training` plans. Forecast
+exports include sized `trainingProjects` with schedules and GPU-hours,
+`trainingProjection` with monthly baseline/growth/project breakdowns, and
+`trainingProjectPolicy` describing aggregation. Validation supports at most
+1,000 projects, 1,000 runs/project, and 1–365 whole days/run, and rejects duplicate
+IDs, unknown owners, invalid dates/SKUs, unconfirmed incremental demand and
+unsafe numeric results. The project tests include an independent daily
+batch-count oracle for monthly overlap peaks.
 
 ### Training allocation assumption
 
@@ -256,7 +395,7 @@ filters, and the specification sources.
 ### Verification
 
 ```powershell
-node --test tests\planner-tabs.test.cjs tests\bottom-up-model.test.cjs tests\forecast-model.test.cjs tests\portal-model.test.cjs tests\sku-model.test.cjs
+node --test tests\training-projects.test.cjs tests\planner-tabs.test.cjs tests\bottom-up-model.test.cjs tests\forecast-model.test.cjs tests\portal-model.test.cjs tests\sku-model.test.cjs
 ```
 
 ## Earlier bottom-up planner design (historical reference)
@@ -883,7 +1022,39 @@ model comparison described above.
 
 ## Screenshots
 
-These screenshots show earlier workflows, not the current two-entry navigation.
+Captured from the current CapacityIQ interface using synthetic data. Click an
+image to inspect it at full size. The screenshots do not contain a user's saved
+workspace or create projects automatically for new visitors.
+
+### Capacity overview
+
+Physical inference/training requirements, allocated baselines, gaps and
+GPU-only purchase estimates. This is the default demo **before adding projects**.
+
+![CapacityIQ overview showing physical GPU requirements, training allocation assumption and purchase costs](docs/screenshots/capacityiq-overview.png)
+
+### Training baseline, growth and new projects
+
+Two illustrative projects belong to the same service/team. Their schedules
+do not overlap, so the new project contribution is the larger concurrent peak,
+not the sum of their individual peaks. The breakdown shows **7,422 total
+training GPUs** for December in the [worked scenario](#worked-training-scenario).
+
+![CapacityIQ training forecast separating baseline, growth and dated project demand with multiple projects per team](docs/screenshots/capacityiq-training-projects.png)
+
+### Project inputs and sizing preview
+
+Model size, tokens, deadline, total runs, concurrency and exact-SKU assumptions
+produce a preview before saving. The confirmation prevents treating a project
+as incremental without acknowledging that it is not already in the baseline.
+
+![CapacityIQ training project editor with compute and memory inputs and a 1024 GPUs per run sizing preview](docs/screenshots/capacityiq-training-input.png)
+
+<details>
+<summary>Earlier prototype screenshots (historical reference)</summary>
+
+The following screenshots show earlier workflows, not the current navigation
+or the dated-project scheduling described above.
 
 **Interactive scenario planner:** edit a service's growth and compare physical
 and H100-equivalent demand.
@@ -929,6 +1100,8 @@ workload names and exact GPU SKUs.
 <summary>Show inventory and workspace controls</summary>
 
 ![Supply inputs and workspace import/export](docs/screenshots/data-assumptions.png)
+
+</details>
 
 </details>
 
@@ -998,7 +1171,7 @@ through May 2027. You can enter a different planning start month.
 Run the JavaScript calculation tests with Node.js:
 
 ```powershell
-node --test .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs .\tests\sku-model.test.cjs .\tests\bottom-up-model.test.cjs
+node --test .\tests\training-projects.test.cjs .\tests\planner-tabs.test.cjs .\tests\portal-model.test.cjs .\tests\forecast-model.test.cjs .\tests\sku-model.test.cjs .\tests\bottom-up-model.test.cjs
 ```
 
 The calculations are in [portal/model.js](portal/model.js), the UI is in

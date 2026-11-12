@@ -452,7 +452,7 @@
     return `<details class="panel collapsible-panel" id="planner-method"><summary class="panel-heading"><h2>How capacity is forecasted</h2></summary>
       <ol class="logic-steps">
         <li><h3>1. Look at demand and its growth</h3><p>Inference uses recorded requests per second. Training uses recorded peak GPU demand. Compare the latest pre-plan month with the same period last year, then continue that growth pace for the next six months.</p><p><strong>Example:</strong> +44% year-over-year growth becomes +20% over six months. You can change that six-month percentage in either data tab.</p></li>
-        <li><h3>2. Calculate GPUs needed</h3><p><strong>Inference:</strong> use forecast peak traffic and measured serving performance, with headroom. For 120 requests/sec and 50 requests/sec per GPU, 20% headroom means planning for 40 requests/sec per GPU: <strong>120 / 40 = 3 GPUs</strong>.</p><p><strong>Training:</strong> 100 GPUs of historical demand with +20% growth means <strong>120 GPUs</strong> at month six. This forecast does not add scheduled roadmap plans.</p></li>
+        <li><h3>2. Calculate GPUs needed</h3><p><strong>Inference:</strong> use forecast peak traffic and measured serving performance, with headroom. For 120 requests/sec and 50 requests/sec per GPU, 20% headroom means planning for 40 requests/sec per GPU: <strong>120 / 40 = 3 GPUs</strong>.</p><p><strong>Training:</strong> 100 GPUs of historical demand with +20% growth means 120 GPUs at month six. Add the monthly peak of new projects: another 32 GPUs means <strong>152 GPUs</strong>. Project sizes come from model parameters, tokens, duration, GPU performance and memory; only overlapping project dates add together within a SKU. Legacy roadmap plans are not added automatically.</p></li>
         <li><h3>3. Compare with the allocation baseline</h3><p><strong>Gap = forecast - allocation baseline.</strong> ${trainingAllocationNote(state.trainingAllocationBasis)} Inference still uses recorded allocations. The separate H100 comparison converts both sides using the same index.</p><p>Examples are illustrative, not hardware benchmarks. Monthly points show the trajectory; growth is entered once for the six-month period. Negative gaps do not release assigned GPUs.</p></li>
       </ol><p class="logic-key">For dates beyond six months, continue the same growth pace: +20% per six months becomes +44% after twelve months, not +20% total. Long-range projections are scenarios, not validated predictions. Inference GPU sizing retains the existing high-demand P90 allowance when history supports it, plus each service's headroom. The throughput chart shows the growth projection, not the P90 peak. P90 is a heuristic, not a guarantee. A multi-GPU model is rounded to whole serving replicas. The advanced forecast's extra traffic/throughput controls and launches are separate and do not stack onto these growth inputs.</p></details>`;
   }
@@ -467,7 +467,7 @@
     return `<section class="panel planner-demand-summary" data-demand-summary="${kind}" aria-label="${name} GPU requirement">
       <div class="panel-heading"><div><h2>${name} GPUs required</h2><p>Forecast for ${fmtMonth(report.targetMonth)}</p></div></div>
       <div class="panel-body"><div class="demand-total"><strong data-demand-total>${fmt(segment.forecast)}</strong><span>physical GPUs</span></div>
-        <p class="description">${kind === "inference" ? "High-demand (P90) sizing with headroom." : "Historical peak demand projected with training growth."} Total across the SKUs below, not H100 equivalents. GPU types are not interchangeable.</p>
+        <p class="description">${kind === "inference" ? "High-demand (P90) sizing with headroom." : "Historical baseline + baseline growth + new training projects at their monthly concurrent peak by SKU."} Total across the SKUs below, not H100 equivalents. GPU types are not interchangeable.</p>
         ${kind === "training" ? `<p class="help">${trainingAllocationNote(report.trainingAllocationBasis)}</p>` : ""}
         ${table(["GPU SKU", kind === "training" && report.trainingAllocationBasis === "current-demand" ? "Assumed allocated" : "Allocated", "Required", "Gap"], segment.pools.map(p =>
           `<tr data-demand-sku="${esc(p.pool)}"><td>${esc(skuName(p.pool))}</td><td>${fmt(p.allocated)}</td><td><strong>${fmt(p.forecast)}</strong></td><td>${signedGpus(p.gap)}</td></tr>`).join(""))}
@@ -500,6 +500,7 @@
     const needs = kind => table(["Service", "Team", "GPU SKU", kind === "training" && report.trainingAllocationBasis === "current-demand" ? "Assumed allocated GPUs" : "Current allocated GPUs", `GPU need - ${forecastMonth}`, "Gap"],
       report.rows.filter(r => r.kind === kind).map(r => `<tr><td class="service-name">${esc(r.name)}${r.reason ? `<span class="subtext">${esc(r.reason)}</span>` : ""}</td><td>${esc(r.team)}</td><td>${esc(skuName(r.pool))}</td><td>${fmt(r.allocated)}</td><td>${fmt(r.forecast)}</td><td>${r.gap > 0 ? "+" : ""}${fmt(r.gap)}</td></tr>`).join(""));
     return `${plannerPhysicalSummary(report)}
+      ${trainingBreakdown(report)}
       <div class="planner-demand-grid">${plannerDemandSummary(report, "inference")}${plannerDemandSummary(report, "training")}</div>
       ${plannerPurchaseCosts(report)}
       ${plannerExplanation()}
@@ -510,7 +511,7 @@
       ${report.pools.some(p => p.trainingOverrideIgnored) ? '<p class="callout info">Saved company training allocation corrections are preserved but not applied while the no-spare-capacity assumption is selected.</p>' : ""}
       ${report.rows.some(r => r.synthetic) ? '<p class="help">This selection includes synthetic history. It is demonstration data, not measured fleet demand.</p>' : ""}
       <section class="panel"><div class="panel-heading"><div><h2>Inference needs by service, team and SKU</h2><p>Read-only requirements for ${forecastMonth}. Edit growth in the Inference tab.</p></div></div>${needs("inference")}</section>
-      <section class="panel"><div class="panel-heading"><div><h2>Training needs by service, team and SKU</h2><p>Read-only requirements for ${forecastMonth}. Edit growth in the Training tab. ${trainingAllocationNote(report.trainingAllocationBasis)}</p></div></div>${needs("training")}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>Training needs by service, team and SKU</h2><p>Read-only requirements for ${forecastMonth}. Edit baseline growth and new projects in the Training tab. ${trainingAllocationNote(report.trainingAllocationBasis)} Service rows show individual peaks; SKU totals combine project schedules before taking a peak, so service peaks need not sum to the total.</p></div></div>${needs("training")}</section>
       <details class="panel collapsible-panel" id="h100-comparison"><summary class="panel-heading"><h2>H100-equivalent comparison - not physical GPU counts</h2></summary>
         <div class="panel-body"><div class="kpis planner-kpis">
           ${metric("Allocation baseline in H100 equivalents", fmt(report.normalizedAllocated, 1), report.trainingAllocationBasis === "current-demand" ? "Includes assumed training allocation equal to current demand" : "Approximate H100 SXM 80GB compute equivalents", true)}
@@ -538,20 +539,41 @@
         data-planner-growth="${kind}" data-planner-service="${esc(r.serviceId)}" data-planner-pool="${esc(r.pool)}" aria-label="Six-month ${kind} growth for ${esc(r.name)} on ${esc(skuName(r.pool))}"></label>
         <span class="subtext">${r.manual ? "Your growth assumption" : "Following historical pace"}; suggested ${pct(r.suggestedGrowthPct)}</span>
         <button class="text-button" data-historical-pace="${kind}" data-planner-service="${esc(r.serviceId)}" data-planner-pool="${esc(r.pool)}" ${r.suggestedGrowthPct === null ? "disabled" : ""}>Use historical pace</button></td>
-      <td>${fmt(r.selected.value, inference ? 1 : 0)}<span class="subtext">${unit}</span></td><td><strong>${fmt(r.forecast)}</strong><span class="subtext"><strong>${esc(skuName(r.pool))}</strong> physical GPUs</span><span class="subtext">${inference ? `High-demand (P90) sizing + headroom; P50: ${fmt(r.selected.gpusP50)} GPUs` : "Rounded up to whole GPUs"}</span>${r.reason ? `<span class="subtext error">${esc(r.reason)}</span>` : ""}</td></tr>`).join("");
+      <td>${fmt(inference ? r.selected.value : r.selected.baselineGpus, inference ? 1 : 0)}<span class="subtext">${unit}${inference ? "" : `; growth ${signedGpus(r.selected.baselineGrowth)}`}</span></td>${inference ? "" : `<td>${fmt(r.selected.projectGpus)}<span class="subtext">Concurrent project peak</span></td>`}<td><strong>${fmt(r.forecast)}</strong><span class="subtext"><strong>${esc(skuName(r.pool))}</strong> physical GPUs</span><span class="subtext">${inference ? `High-demand (P90) sizing + headroom; P50: ${fmt(r.selected.gpusP50)} GPUs` : "Service/SKU peak, rounded to whole GPUs"}</span>${r.reason ? `<span class="subtext error">${esc(r.reason)}</span>` : ""}</td></tr>`).join("");
     return `${plannerDemandSummary(report, kind)}
+      ${inference ? "" : trainingBreakdown(report) + trainingProjectsView(report)}
       <section class="panel"><div class="panel-heading"><div><h2>${name}: last 12 months and next ${report.futureMonths.length} months</h2>
-      <p>${inference ? "Total recorded inference throughput (average requests/sec), followed by the selected growth projection." : "Sum of service/SKU peak concurrent GPU needs, followed by the selected growth projection. Service peaks may occur at different times."}</p></div></div>
+      <p>${inference ? "Total recorded inference throughput (average requests/sec), followed by the selected growth projection." : "Historical service peaks, followed by baseline growth plus scheduled new projects. Each month's grown baseline is held constant while daily project overlap is calculated by SKU."}</p></div></div>
       <div class="chart-wrap"><div class="legend"><span>Solid: historical demand</span><span>Dotted: ${report.futureMonths.length}-month projection</span></div>${chart(points, [{key: "value", name: `${name} ${unit}`, color: inference ? "var(--accent)" : "var(--amber)"}], `${name}: 12 months of historical ${unit} and ${report.futureMonths.length} projected months`, 12)}</div>
       <p class="panel-body help">The table below shows demand and GPU need for ${forecastMonth}, the month selected above. ${report.futureMonths.length > 6 ? "Beyond six months, the same growth pace continues; this is a long-range scenario, not a validated prediction." : ""} Missing history is a gap in the chart, not zero. ${inference ? "Average RPS is calculated from daily requests. GPU sizing uses peak RPS, not the chart's average. A partial latest month uses observed days; YoY compares matching dates." : "History records monthly peak GPU demand and allocated GPUs separately. A zero-demand month must have an explicit zero record."}
       ${rows.some(r => r.synthetic) ? " Includes clearly labeled synthetic demo data." : ""}</p></section>
-      <section class="panel"><div class="panel-heading"><div><h2>${name} demand by service</h2><p>YoY is shown for context. Continue that annual pace or enter one growth percentage for the next six months. +44% YoY means +20% over six months, not +44%. Changes auto-save when you leave the field.</p></div></div>
-      ${table(["Service / team / SKU", "Current demand", "Observed YoY growth", "Six-month growth", `Demand - ${forecastMonth}`, `Physical GPU need - ${forecastMonth}`], tableRows)}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>${name} demand by service</h2><p>YoY is shown for context. Continue that annual pace or enter one growth percentage for the next six months. +44% YoY means +20% over six months, not +44%. Changes auto-save when you leave the field. ${inference ? "" : "Growth applies only to the historical baseline, not new projects. Service project peaks may occur on different days and need not sum to the SKU total."}</p></div></div>
+      ${table(["Service / team / SKU", "Current demand", "Observed YoY growth", "Six-month growth", `${inference ? "Demand" : "Baseline need"} - ${forecastMonth}`, ...inference ? [] : ["New project GPUs"], `Physical GPU need - ${forecastMonth}`], tableRows)}</section>
       ${inference ? '<p class="help">Rates replace the old extra-growth adjustment; they are not added on top of it. Requests from different models are not equal units of work, so each service is sized separately before GPUs are summed.</p>' :
       trainingHistoryControls()}`;
   }
+  function trainingBreakdown(report) {
+    const selected = report.trainingProjection.find(p => p.month === report.targetMonth);
+    return `<section class="panel" id="training-breakdown"><div class="panel-heading"><div><h2>What adds up to training demand?</h2><p>${fmtMonth(report.targetMonth)}: current baseline + growth from baseline + new project demand. All counts are physical GPUs.</p></div></div>
+      ${table(["GPU SKU", "Current baseline", "Baseline growth", "Baseline after growth", "New project peak", "Total required"],
+        [...selected.pools, {...selected, pool: "total"}].map(p => `<tr data-training-breakdown="${esc(p.pool)}"><td><strong>${p.pool === "total" ? "Combined" : esc(skuName(p.pool))}</strong></td><td>${fmt(p.current)}</td><td>${signedGpus(p.baselineGrowth)}</td><td>${fmt(p.baselineGpus)}</td><td>${fmt(p.projectGpus)}</td><td><strong>${fmt(p.forecast)}</strong></td></tr>`).join(""))}
+      <p class="panel-body help">New projects must not already be counted in the historical baseline. When refreshing history, remove incremental projects now covered by that baseline. Project GPUs are reused between non-overlapping runs on the same SKU, without reducing retained allocations. Different SKUs cannot offset one another. Missing history or growth leaves the full forecast unavailable; known project demand is still shown.</p></section>`;
+  }
+  function trainingProjectsView(report) {
+    const projects = report.trainingProjects;
+    return `<section class="panel" id="training-projects"><div class="panel-heading"><div><h2>New training projects</h2><p>Add multiple projects for each service/team. Only additional work not already included in baseline demand belongs here.</p></div><button class="button primary" data-action="training-project">Add training project</button></div>
+      ${projects.length ? table(["Project / owner", "GPU SKU", "Scheduled dates", "Runs / concurrency", "GPUs per run", `Project peak - ${fmtMonth(report.targetMonth)}`, ""],
+        projects.map(p => `<tr data-training-project="${esc(p.id)}"><td class="service-name">${esc(p.name)}<span class="subtext">${esc(state.services.find(s => s.id === p.serviceId).name)}<br>${esc(p.team)}</span></td><td>${esc(skuName(p.pool))}</td>
+          <td>${p.startDate} to ${p.lastActiveDate}<span class="subtext">${fmt(p.days)} days/run; ${fmt(p.batches)} back-to-back batches</span></td>
+          <td>${fmt(p.runs)} total<span class="subtext">Up to ${fmt(p.concurrentRuns)} at once</span></td>
+          <td><strong>${fmt(p.gang)}</strong><span class="subtext">Compute ${fmt(p.computeGpus)}; memory screen ${fmt(p.memoryGpus)}; block ${fmt(p.block)}</span></td>
+          <td>${fmt(M.trainingProjectPeak([p], report.targetMonth))}</td><td><button class="text-button" data-edit-training-project="${esc(p.id)}">Edit</button> <button class="text-button" data-remove-training-project="${esc(p.id)}">Remove</button></td></tr>`).join("")) :
+        '<p class="panel-body description">No new training projects in this selection. The forecast currently uses baseline demand and growth only. Add a project to include its dated GPU requirements.</p>'}
+      <p class="panel-body help">Runs in each batch start together; the next batch starts after the configured days per run. A smaller final batch reserves fewer GPUs. Start and last active dates are inclusive, using UTC calendar days. Monthly project peaks are combined by date, not simply summed. Register additional services/teams under Data & assumptions.</p>
+      <details class="panel-body"><summary>Project sizing formula and limits</summary><p class="help">Compute GPUs = ceil(6 x parameters x training tokens / (days x 86,400 x peak FLOPs/sec/GPU x MFU fraction)). Memory GPUs = ceil(parameters x training-state bytes/parameter / memory bytes/GPU). Take the larger count and round up to the topology block. Dense-transformer pretraining only; MFU at scale and topology require validation. The memory screen excludes activations and buffers and does not prove fit. Legacy roadmap plans are retained separately and never auto-added here.</p></details></section>`;
+  }
   function trainingHistoryControls() {
-    return `<section class="panel"><div class="panel-heading"><div><h2>Training history data</h2><p>Import monthly demand and allocation records. Scheduled roadmap plans are preserved in workspace exports but are not added to this forecast.</p></div></div><div class="panel-body">
+    return `<section class="panel"><div class="panel-heading"><div><h2>Training history data</h2><p>Import monthly baseline demand and allocation records. Legacy roadmap plans remain separate. Add incremental work through New training projects, not through historical growth or a second history entry.</p></div></div><div class="panel-body">
         <label>Training allocation baseline <select data-training-allocation-basis aria-label="Training allocation baseline">
           <option value="current-demand" ${state.trainingAllocationBasis === "current-demand" ? "selected" : ""}>Assume allocation equals current demand (no spare capacity)</option>
           <option value="recorded" ${state.trainingAllocationBasis === "recorded" ? "selected" : ""}>Use recorded allocations</option>
@@ -742,6 +764,39 @@
   function selectField(name, label, options) {
     return `<label>${label}<select name="${name}">${options}</select></label>`;
   }
+  function trainingParameterFields(t) {
+    return field("parametersB", "Dense parameters (billions)", t.parametersB, "number", 'min="0.001" max="10000" step="any"') +
+      field("tokensB", "Total training tokens per run (billions)", t.tokensB, "number", 'min="0.001" max="10000000" step="any"') +
+      field("peakTflops", "Peak training compute per GPU (TFLOP/s)", t.peakTflops, "number", 'min="1" max="100000" step="any"',
+        'Use the theoretical per-GPU rating for your training precision (such as BF16/FP16), without sparsity. For H200 SXM BF16/FP16, 989 is a rounded planning value. Other GPUs or precisions need their own rating. Enter peak performance before MFU; utilization is applied separately. <a href="https://www.nvidia.com/en-us/data-center/h200/" target="_blank" rel="noopener noreferrer">H200 specifications</a>') +
+      field("mfu", "Model FLOPs utilization (%)", t.mfu, "number", 'min="1" max="100" step="any"') +
+      field("memoryGB", "Memory budget per GPU (decimal GB)", t.memoryGB, "number", `min="1" max="${M.skuInfo(t.pool).memoryGB ?? 10000}" step="any"`) +
+      field("bytesPerParameter", "Training-state bytes / parameter", t.bytesPerParameter, "number", 'min="1" max="100" step="any"', "Weights + gradients + optimizer state. Activations/buffers excluded; not proof of fit.") +
+      field("block", "Topology rounding block (GPUs)", t.block, "number", 'min="1" max="65536" step="1"');
+  }
+  function trainingProjectInput(values, id) {
+    const project = {...values, id: id || `project-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      incremental: values.incremental === "on"};
+    for (const key of ["parametersB", "tokensB", "days", "peakTflops", "mfu", "memoryGB", "bytesPerParameter", "block", "runs", "concurrentRuns"]) {
+      project[key] = Number(values[key]);
+    }
+    return project;
+  }
+  function previewTrainingProject() {
+    $("#form-error").textContent = "";
+    $("#training-project-preview").textContent = "";
+    if (!$("#editor-form").reportValidity()) {
+      $("#form-error").textContent = "Complete the required project fields before previewing.";
+      return;
+    }
+    try {
+      const project = M.trainingProject(trainingProjectInput(Object.fromEntries(new FormData($("#editor-form"))), editContext.id));
+      $("#training-project-preview").innerHTML = `<strong>${fmt(project.gang)} GPUs per run; up to ${fmt(project.peakGpus)} project GPUs at once.</strong>
+        <p>Compute: ${fmt(project.computeGpus)} GPUs. Simplified memory screen: ${fmt(project.memoryGpus)} GPUs. Rounded to blocks of ${fmt(project.block)}.</p>
+        <p>${fmt(project.runs)} runs in ${fmt(project.batches)} batches, active ${project.startDate} through ${project.lastActiveDate}. ${fmt(project.reservedGpuHours)} reserved GPU-hours.</p>
+        <p class="help">${esc(project.warning)} Preview only; save to update the forecast.</p>`;
+    } catch (error) {$("#form-error").textContent = error.message;}
+  }
   function openEditor(kind, id) {
     editContext = {kind, id};
     $("#form-error").textContent = "";
@@ -810,6 +865,28 @@
         field("measuredOn", "Evidence date (before planning starts)", existing?.measuredOn ?? new Date(Date.parse(`${state.startMonth}-01`) - 86400000).toISOString().slice(0, 10), "date") +
         selectField("source", "Evidence source", `<option value="user-benchmark" ${existing?.source !== "synthetic" ? "selected" : ""}>User-supplied benchmark</option><option value="synthetic" ${existing?.source === "synthetic" ? "selected" : ""}>Illustrative example</option>`) +
         field("evidence", "Benchmark evidence / configuration assumptions", existing?.evidence ?? "", "text", 'maxlength="150"');
+    } else if (kind === "training-project") {
+      const owner = state.services.find(s => s.id === serviceFilter) || state.services[0];
+      const selectedPool = poolFilter === "all" ? owner.pool : poolFilter;
+      const projectPool = M.skuInfo(selectedPool).legacy ? "H200-SXM-141GB" : selectedPool;
+      const t = state.trainingProjects.find(p => p.id === id) || {name: "", serviceId: owner.id, pool: projectPool,
+        startDate: `${state.plannerTargetMonth ?? state.startMonth}-01`, parametersB: 70, tokensB: 1000,
+        days: 12, peakTflops: "", mfu: 40, memoryGB: M.skuInfo(projectPool).memoryGB, bytesPerParameter: 16,
+        block: 256, runs: 1, concurrentRuns: 1, incremental: false};
+      title = id ? "Edit new training project" : "Add new training project";
+      intro = "Additional dense-transformer pretraining only. Each run processes the entered tokens within the entered days. Runs are scheduled in back-to-back batches with the chosen concurrency. The project is added to baseline growth, not grown again.";
+      fields = field("name", "Project name", t.name, "text", 'maxlength="150"') +
+        selectField("serviceId", "Owning service / team", state.services.map(s => `<option value="${esc(s.id)}" ${s.id === t.serviceId ? "selected" : ""}>${esc(s.name)} / ${esc(s.team)}</option>`).join("")) +
+        selectField("pool", "GPU SKU", M.SKU_CATALOG.filter(s => !s.legacy).map(s => `<option value="${s.id}" ${s.id === t.pool ? "selected" : ""}>${esc(s.name)}</option>`).join("")) +
+        field("startDate", "First run start date (UTC)", t.startDate, "date", 'min="1000-01-01" max="9999-12-30"') +
+        field("days", "Training deadline per run (whole days)", t.days, "number", 'min="1" max="365" step="1"') +
+        field("runs", "Total project runs", t.runs, "number", 'min="1" max="1000" step="1"') +
+        field("concurrentRuns", "Maximum concurrent runs", t.concurrentRuns, "number", 'min="1" max="1000" step="1"', "Cannot exceed total runs. A final partial batch uses only the remaining runs.") +
+        trainingParameterFields(t) +
+        `<label class="wide"><span><input type="checkbox" name="incremental" required ${t.incremental ? "checked" : ""}> This is new demand, not already included in historical baseline demand.</span></label>
+        <p class="help wide">For a service/SKU without history, import its baseline (an explicit zero record if there is no current demand) and enter baseline growth. Project sizing is shown even when the full forecast lacks that baseline. Throughput and MFU are user assumptions, not verified benchmarks.</p>
+        <div class="wide"><button class="button subtle" type="button" data-preview-training-project>Preview GPU requirement</button></div>
+        <div class="wide" id="training-project-preview" role="status"></div>`;
     } else if (kind === "training") {
       const trainingPool = poolFilter === "all" ? "H200-SXM-141GB" : poolFilter;
       const t = state.training.find(t => t.id === id) || {name: "", serviceId: serviceFilter === "all" ? state.services[0].id : serviceFilter, pool: trainingPool, month: state.startMonth, parametersB: 70, tokensB: 1000, days: 14, peakTflops: "", mfu: 40, memoryGB: M.skuInfo(trainingPool).memoryGB ?? "", bytesPerParameter: 16, block: 256, runs: 1};
@@ -817,16 +894,10 @@
       intro = "Dense-transformer pretraining only. Memory is filled from the selected SKU; you may budget less, but not more. Enter dense peak throughput at the intended precision and a supported MFU. No throughput equivalence is assumed between SKUs.";
       fields = field("name", "Plan name", t.name, "text", 'maxlength="150"') + selectField("serviceId", "Owning service", serviceOptions(t.serviceId)) +
         selectField("pool", "GPU SKU", poolOptions(t.pool)) + field("month", "Planned month", t.month, "month") +
-        field("parametersB", "Dense parameters (billions)", t.parametersB, "number", 'min="0.001" max="10000" step="any"') +
-        field("tokensB", "Total training tokens (billions)", t.tokensB, "number", 'min="0.001" max="10000000" step="any"') +
         field("days", "Active training window (days)", t.days, "number", 'min="0.01" max="31" step="any"') +
         field("runs", "Concurrent runs", t.runs, "number", 'min="1" max="1000" step="1"') +
         field("scenarioGrowthPct", "Extra concurrent runs by month six (%)", t.scenarioGrowthPct ?? 0, "number", 'min="-90" max="300" step="0.1"', "Compounds to the scheduled month; rounds up whole runs. Model size, tokens and days per run stay fixed.") +
-        field("peakTflops", "Precision-matched dense peak TFLOP/s / GPU", t.peakTflops, "number", 'min="1" max="100000" step="any"') +
-        field("mfu", "Model FLOPs utilization (%)", t.mfu, "number", 'min="1" max="100" step="any"') +
-        field("memoryGB", "Memory budget per GPU (decimal GB)", t.memoryGB, "number", `min="1" max="${M.skuInfo(t.pool).memoryGB ?? 10000}" step="any"`) +
-        field("bytesPerParameter", "Training-state bytes / parameter", t.bytesPerParameter, "number", 'min="1" max="100" step="any"', "Weights + gradients + optimizer state. Activations/buffers excluded; not proof of fit.") +
-        field("block", "Topology rounding block (GPUs)", t.block, "number", 'min="1" max="65536" step="1"');
+        trainingParameterFields(t);
     } else if (kind === "budgets") {
       title = `GPU budget for ${planningMonth}`;
       intro = "Budget follows P90 forecast need automatically. Enter a count only to override it; leave blank to keep following the forecast. Overrides apply to this month and the selected service/organization scope, not other months. Gap always remains forecasted GPUs minus current allocated GPUs, independent of the budget.";
@@ -856,7 +927,7 @@
       intro = "Only matching service/SKU/month training-history records will be replaced. Other history, growth inputs and allocations are preserved. Synthetic records are labeled as examples. Export a backup first if needed.";
       editContext.imported = id;
       fields = '<p class="description wide">Confirm using Save & recalculate, or cancel to keep your current history.</p>';
-    } else if (kind === "remove-training" || kind === "remove-addition" || kind === "reset" || kind === "import") {
+    } else if (kind === "remove-training" || kind === "remove-training-project" || kind === "remove-addition" || kind === "reset" || kind === "import") {
       title = kind === "reset" ? "Replace workspace with sample workload demo?" : kind === "import" ? "Import and replace workspace?" : "Remove this planning input?";
       intro = "This changes the locally saved workspace. Export your current workspace first if you need a backup. This does not change any real infrastructure.";
       if (kind === "import") editContext.imported = id;
@@ -910,6 +981,11 @@
         const item = (workload === "inference" ? next.services : next.training).find(r => r.id === id);
         item.normalization = {...values, selectedRate: Number(values.selectedRate), referenceRate: Number(values.referenceRate),
           sku: item.pool, referenceSku: M.NORMALIZATION_REFERENCE, configuration: M.normalizationKey(workload, item)};
+      } else if (kind === "training-project") {
+        const project = trainingProjectInput(values, id);
+        const index = next.trainingProjects.findIndex(p => p.id === id);
+        if (index >= 0) next.trainingProjects[index] = project;
+        else next.trainingProjects.push(project);
       } else if (kind === "training") {
         const t = {...next.training.find(t => t.id === id), ...values, id: id || `training-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
         for (const key of ["parametersB", "tokensB", "days", "peakTflops", "mfu", "memoryGB", "bytesPerParameter", "block", "runs", "scenarioGrowthPct"]) t[key] = Number(values[key]);
@@ -942,7 +1018,8 @@
         for (const p of M.POOLS) for (const key of ["installed", "unavailable", "reserve"]) next.supply[p][key] = Number(values[`${p}_${key}`]);
       } else if (kind === "addition") {
         next.supply.additions.push({...values, gpus: Number(values.gpus)});
-      } else if (kind === "remove-training") next.training = next.training.filter(t => t.id !== id);
+      } else if (kind === "remove-training-project") next.trainingProjects = next.trainingProjects.filter(p => p.id !== id);
+      else if (kind === "remove-training") next.training = next.training.filter(t => t.id !== id);
       else if (kind === "remove-addition") next.supply.additions.splice(Number(id), 1);
       else if (kind === "reset") {next = M.demo(); next.trainingHistory = M.demoTrainingHistory(next);}
       else if (kind === "training-history") next = editContext.imported;
@@ -1027,6 +1104,9 @@
     else if (button.dataset.service) {serviceFilter = button.dataset.service; render();}
     else if (button.dataset.editService) openEditor("service", button.dataset.editService);
     else if (button.dataset.editBenchmark) openEditor("benchmark", button.dataset.editBenchmark);
+    else if (button.dataset.editTrainingProject) openEditor("training-project", button.dataset.editTrainingProject);
+    else if (button.dataset.removeTrainingProject) openEditor("remove-training-project", button.dataset.removeTrainingProject);
+    else if (button.hasAttribute("data-preview-training-project")) previewTrainingProject();
     else if (button.dataset.editTraining) openEditor("training", button.dataset.editTraining);
     else if (button.dataset.removeTraining) openEditor("remove-training", button.dataset.removeTraining);
     else if (button.hasAttribute("data-remove-addition")) openEditor("remove-addition", button.dataset.removeAddition);
@@ -1055,6 +1135,9 @@
     else if (plan) openEditor("training", plan.dataset.trainingRow);
   });
   document.addEventListener("input", event => {
+    if (editContext?.kind === "training-project" && event.target.closest("#editor-form")) {
+      $("#training-project-preview").textContent = "Inputs changed. Preview again or save to recalculate.";
+    }
     if (event.target.matches("[data-planner-growth]")) forecastSaveStatus("Unsaved growth. Finish editing or click Save forecast.");
     else if (event.target.matches("[data-service-growth]")) previewServiceGrowth(event.target, false);
     else if (event.target.matches("[data-training-growth]")) {
@@ -1185,7 +1268,7 @@
     }
     else if (input.dataset.trainingMonth) rescheduleTraining(input.dataset.trainingMonth, input.value);
     else if (input.id === "service-filter") {serviceFilter = input.value; render();}
-    else if (input.name === "pool" && editContext?.kind === "training") {
+    else if (input.name === "pool" && ["training", "training-project"].includes(editContext?.kind)) {
       const hardware = M.skuInfo(input.value);
       const memory = $("#editor-fields [name=memoryGB]");
       memory.value = hardware.memoryGB ?? "";
