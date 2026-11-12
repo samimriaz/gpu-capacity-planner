@@ -100,8 +100,11 @@ These are teaching numbers, not benchmark measurements.
 
 The inference section forecasts service traffic and GPU requirements. The
 training section has its own forecast, editable run-growth percentages and
-schedule. Combined history, prior-year comparison and normalization remain
-available under **Combined trend, historical comparison and normalization**.
+schedule. The optional combined history and normalization section is removed
+from the planner to keep the focus on current GPUs, forecasts and gaps.
+Historical and prior-year comparisons remain on **Capacity forecast**.
+The standalone service-trend panel is also omitted. The service table retains
+current usage, growth controls, monthly GPU requirements and model drill-down.
 
 Open **Show detailed formulas and forecasting assumptions** for the inference
 and training methods. Actual workspace calculations, including large service
@@ -287,11 +290,9 @@ SKU, 100 of those GPUs represent 200 H100 equivalents. Another workload on that
 same SKU can have a different ratio. The example pairs in the demo are explicitly
 illustrative, not measured performance.
 
-The planner sums these workload-specific equivalents and reports growth from
-**planning month one to planning month six**. Training contributes wherever it
-is scheduled, including those endpoints. Planner charts use physical GPUs;
-normalized totals and growth remain available under **Combined trend,
-historical comparison and normalization** and in the SKU tables.
+The planner sums these workload-specific equivalents. Training contributes in
+its scheduled months. Planner charts use physical GPUs; normalized totals
+remain in the organization, model and SKU tables and forecast exports.
 
 The final hardware table retains each workload's assigned SKU and replica
 rounding. It does not choose a new mix, move jobs, or treat normalized demand as
