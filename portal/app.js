@@ -12,14 +12,19 @@
   let state;
   let storageBlocked = false;
   let initialError = "";
+  let forecastSaveMessage = "Not saved yet. Start or save this forecast to keep it.";
+  let forecastSaveError = false;
   try {
     const saved = localStorage.getItem(KEY);
     const parsed = saved ? JSON.parse(saved) : null;
     state = parsed ? M.validate(parsed) : M.demo();
+    if (parsed) forecastSaveMessage = "Saved in this browser. Edits auto-save when you finish editing.";
     if (parsed && parsed.version < 3) initialError = "Workspace upgraded for GPU SKUs. Old family-level inventory is kept as 'variant not specified'; no variant has been guessed. Your services and plans are unchanged. Load the NVIDIA workload demo from Data & assumptions to replace the example data.";
   } catch (error) {
     state = M.demo();
     storageBlocked = true;
+    forecastSaveMessage = "Not saved. Stored workspace could not be loaded.";
+    forecastSaveError = true;
     initialError = `Saved workspace could not be loaded: ${error.message} Showing a demo preview only. Export/repair the saved data outside this portal, import a valid workspace, or explicitly reset the demo. No data has been overwritten.`;
   }
   let view = "planning";
@@ -58,13 +63,22 @@
       state = next;
       storageBlocked = false;
       $("#save-state").textContent = "Saved in this browser";
+      forecastSaveStatus("Saved in this browser. Edits auto-save when you finish editing.");
       if (redraw) render();
       notice(message);
       return true;
     } catch (error) {
+      $("#save-state").textContent = "Changes not saved";
+      forecastSaveStatus("Not saved. Resolve the error and try saving again.", true);
       notice(`Not saved: ${error.message}`, true);
       return false;
     }
+  }
+  function forecastSaveStatus(message, error = false) {
+    forecastSaveMessage = message;
+    forecastSaveError = error;
+    $("#forecast-save-status").textContent = message;
+    $("#forecast-save-status").classList.toggle("error", error);
   }
   const clone = () => JSON.parse(JSON.stringify(state));
   const chosenServices = () => state.services.filter(s =>
@@ -443,6 +457,7 @@
     const status = input.closest(".service-growth").querySelector("[data-growth-status]");
     status.classList.toggle("error", !input.checkValidity());
     if (!input.checkValidity()) {
+      forecastSaveStatus("Unsaved changes. Enter valid growth before saving.", true);
       status.textContent = "Preview not applied. Enter growth between -90% and +300% in steps of 0.1%.";
       return;
     }
@@ -456,7 +471,10 @@
     if (persist) {
       if (!save(next, "Service growth saved. SKU demand and organization totals updated.", false, false)) {render(); return;}
       status.textContent = "Scenario saved.";
-    } else status.textContent = "Live preview - release the slider or leave the number field to save.";
+    } else {
+      status.textContent = "Live preview - release the slider or leave the number field to save.";
+      forecastSaveStatus("Unsaved changes. Finish editing or click Save forecast.");
+    }
     const report = M.bottomUpForecast(next, serviceFilter, teamFilter, poolFilter);
     // Keep table inputs mounted so typing and pointer drags survive live previews.
     const preview = document.createElement("template");
@@ -561,6 +579,7 @@
     $("#start-month").value = state.startMonth;
     $("#forecast-start-month").value = state.startMonth;
     $("#forecast-start-form").hidden = view !== "planning";
+    forecastSaveStatus(forecastSaveMessage, forecastSaveError);
     $("#workspace-filters").hidden = view === "planning";
     document.querySelectorAll("nav button").forEach(b => {
       b.classList.toggle("active", b.dataset.view === view);
@@ -871,6 +890,9 @@
   });
   document.addEventListener("input", event => {
     if (event.target.matches("[data-service-growth]")) previewServiceGrowth(event.target, false);
+    else if (event.target.matches("[data-training-growth]")) {
+      forecastSaveStatus("Unsaved changes. Finish editing or click Save forecast.");
+    }
   });
   document.addEventListener("keydown", event => {
     if (event.key === "Enter" && event.target.matches("[data-service-growth]")) {
@@ -968,6 +990,23 @@
       } catch (error) {notice(`Import rejected: ${error.message}`, true);}
       finally {input.value = "";}
     }
+  });
+  $("#save-forecast").addEventListener("click", () => {
+    const invalid = [...document.querySelectorAll("[data-service-growth],[data-training-growth]")]
+      .find(input => !input.checkValidity());
+    if (invalid) {
+      invalid.closest("details")?.setAttribute("open", "");
+      invalid.reportValidity();
+      forecastSaveStatus("Unsaved changes. Correct the invalid growth input before saving.", true);
+      notice("Forecast not saved: correct the invalid growth input.", true);
+      return;
+    }
+    if ($("#forecast-start-month").value !== state.startMonth) {
+      forecastSaveStatus("Selected month not applied. Click Start forecast before saving.", true);
+      notice("Click Start forecast to apply the selected month before saving.", true);
+      return;
+    }
+    save(clone(), "Forecast saved. Reopen this page in the same browser to continue editing.", false, false);
   });
   $("#main-action").addEventListener("click", () => {
     if (view === "capacity" || view === "planning") exportCapacityForecast();

@@ -64,6 +64,16 @@ forecast month for inspection. Existing inputs and allocations are retained,
 and starting a forecast does not create another plan or workspace. Other pages
 keep their existing filters; organization and model drill-down remains available.
 
+A **Save forecast** button beside **Start forecast** explicitly saves the current
+forecast inputs, start month, budgets and allocations. The saved forecast reopens
+automatically on the next visit and remains editable. Growth edits also auto-save
+when the slider is released or the input loses focus; other editors save on
+confirmation. The top status distinguishes saved, pending edits and failed saves.
+A different month in the picker must be applied with **Start forecast** before
+saving. Saving updates the same forecast rather than creating duplicate plans.
+Storage is local to this browser and device, not a signed-in account or shared
+backend. Export workspace JSON for backup or to move the forecast elsewhere.
+
 **How this capacity forecast is calculated** follows the month picker, then
 the scenario controls. The planner separates **Inference** and **Training**, with
 three summary cards: **Current allocated GPUs**, **Forecast GPU need**, and
