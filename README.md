@@ -67,7 +67,12 @@ keep their existing filters; organization and model drill-down remains available
 **How this capacity forecast is calculated** follows the month picker, then
 the scenario controls. The planner separates **Inference** and **Training**, with
 inference GPU need, training GPU need, total demand and combined supply shortage
-at the top. The small explanation example uses 3 inference GPUs and 6 training
+at the top. The extra planning toolbar is removed: summaries and budget edits
+use the forecast start month, charts use physical GPUs, and the full six-month
+forecast remains visible. Training inclusion and global adjustments are still
+available on **Capacity forecast**; saved settings are not reset. Organization
+and model drill-down has a contextual **Back to company forecast** link only
+when a narrower scope is open. The small explanation example uses 3 inference GPUs and 6 training
 GPUs: 9 total. Current allocated GPUs are 2 for inference and 4 for training; budgets default
 to the needs of 3 and 6, leaving gaps of 1 and 2.
 These are teaching numbers, not benchmark measurements.
@@ -170,9 +175,11 @@ add fleet telemetry ingestion or multi-model service support.
 - Drag a training card to another month. A month selector provides the same
   action without dragging. Active run days stay unchanged; a 31-day run cannot
   move into February.
-- Turn **Include training** off to compare inference-only demand. Training
+- On **Capacity forecast**, turn **Include training** off to compare inference-only demand. Training
   plans remain editable and are not deleted.
-- Choose **Inspect month** to see that month's organization and SKU totals.
+- The planner's organization/SKU summary and budget editor use the forecast
+  start month; monthly service requirements and the training forecast show the
+  full horizon.
 - The bottom-up chart shows recorded GPU assignments as a **solid historical
   trend that connects directly to the dotted total forecast**, in the same
   color. The dotted portion starts at the final historical point and continues
@@ -252,8 +259,9 @@ illustrative, not measured performance.
 
 The planner sums these workload-specific equivalents and reports growth from
 **planning month one to planning month six**. Training contributes wherever it
-is scheduled, including those endpoints. Switch **Chart units** to compare the
-normalized curve with the physical GPU curve.
+is scheduled, including those endpoints. Planner charts use physical GPUs;
+normalized totals and growth remain available under **Combined trend,
+historical comparison and normalization** and in the SKU tables.
 
 The final hardware table retains each workload's assigned SKU and replica
 rounding. It does not choose a new mix, move jobs, or treat normalized demand as

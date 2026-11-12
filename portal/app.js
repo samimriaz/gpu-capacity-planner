@@ -27,8 +27,7 @@
   let teamFilter = "all";
   let poolFilter = "all";
   let weekly = false;
-  let planningMonth = M.months(state.startMonth).at(-1);
-  let planningUnit = "physical";
+  let planningMonth = state.startMonth;
   let planningQuickService = state.services[0].id;
   const latest = () => state.records.length ? [...state.records].sort((a, b) => a.date.localeCompare(b.date)).at(-1).date : "";
   let endDate = latest();
@@ -344,7 +343,7 @@
   function planningResults(workspace, report = M.bottomUpForecast(workspace, serviceFilter, teamFilter, poolFilter)) {
     const focused = report.monthly.find(m => m.month === planningMonth) || report.monthly.at(-1);
     const first = report.monthly[0], last = report.monthly.at(-1);
-    const normalized = planningUnit === "h100";
+    const normalized = false;
     const subtotal = (m, kind) => {
       const rows = m.workloads.filter(r => r.kind === kind);
       return normalized ? rows.some(r => r.normalizedGpus === null) ? null :
@@ -415,15 +414,14 @@
       ${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon and do not contribute. Open Training roadmap to see them.</p>' : ""}</section>`;
   }
   function planningView() {
-    const horizon = M.months(state.startMonth);
-    if (!horizon.includes(planningMonth)) planningMonth = horizon.at(-1);
+    planningMonth = state.startMonth;
     const services = chosenServices();
     const quick = services.find(s => s.id === serviceFilter) || services.find(s => s.id === planningQuickService) || services[0];
     if (quick) planningQuickService = quick.id;
-    const options = state.forecast || M.defaultForecast();
     const report = M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter);
-    return `<div class="planning-toolbar"><div class="planning-breadcrumb"><button class="text-button" data-planning-root>All organizations</button>${teamFilter !== "all" ? ` / <button class="text-button" data-drill-org="${esc(teamFilter)}">${esc(teamFilter)}</button>` : ""}${serviceFilter !== "all" ? ` / ${esc(state.services.find(s => s.id === serviceFilter).name)}` : ""}</div><label>Inspect month<select id="planning-month">${horizon.map(m => `<option ${m === planningMonth ? "selected" : ""}>${m}</option>`).join("")}</select></label><label>Chart units<select id="planning-unit"><option value="physical" ${planningUnit === "physical" ? "selected" : ""}>Physical GPUs</option><option value="h100" ${planningUnit === "h100" ? "selected" : ""}>H100 equivalents</option></select></label><label class="check-option"><input id="planning-training" type="checkbox" ${options.includeTraining ? "checked" : ""}> Include training</label><button class="text-button" data-view="capacity">Global traffic / efficiency adjustments</button></div>
-      ${forecastLogicPanel(state, report)}
+    const scope = serviceFilter !== "all" || teamFilter !== "all" || poolFilter !== "all" ?
+      `<p class="description">Selected scope: ${esc(serviceFilter !== "all" ? state.services.find(s => s.id === serviceFilter).name : teamFilter !== "all" ? teamFilter : "All services")}${poolFilter !== "all" ? ` / ${esc(skuName(poolFilter))}` : ""}. <button class="text-button" data-planning-root>Back to company forecast</button></p>` : "";
+    return `${forecastLogicPanel(state, report)}${scope}
       <div class="callout info">Build the plan from services upward. Edit a growth number or drag its slider; results preview immediately and save on release or when you leave the field. Drag training cards between months, or use their month selectors. The demo's benchmark pairs are illustrative, not NVIDIA performance claims.</div>
       <div id="planning-results">${planningResults(state, report)}</div>
       <section class="panel"><div class="panel-heading"><h2>How normalization works</h2></div><div class="panel-body description">For each workload: ratio = benchmark throughput per selected-SKU GPU / benchmark throughput per H100 SXM GPU. H100 equivalents = required GPUs x that ratio. Convert back for that same workload: equivalents / ratio. Compare identical model versions, precision, request sizes and response-time targets; enter full-replica throughput divided by its GPU count.<br>Inference uses requests/second/GPU (RPS/GPU); training uses training tokens/second/GPU. Ratios are workload-specific, not a universal H100-to-B200 conversion. A GB200 superchip contains a CPU and two GPUs; it is not one interchangeable GPU.<br>Missing, changed or future-dated evidence makes normalized totals unavailable. Physical SKU demand remains visible. This index does not prove memory fit, interconnect compatibility, or that a job can move to another GPU.</div></section>`;
@@ -798,7 +796,7 @@
   document.addEventListener("click", event => {
     const button = event.target.closest("button");
     if (!button) return;
-    if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; render();}
+    if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; poolFilter = "all"; render();}
     else if (button.dataset.serviceTrend) {
       planningQuickService = button.dataset.serviceTrend; render();
       $("#service-demand-trend").scrollIntoView({block: "nearest"});
@@ -905,12 +903,6 @@
       save(next, "Training run growth saved. Inference inputs are unchanged.");
     }
     else if (input.dataset.trainingMonth) rescheduleTraining(input.dataset.trainingMonth, input.value);
-    else if (input.id === "planning-month") {planningMonth = input.value; render();}
-    else if (input.id === "planning-unit") {planningUnit = input.value; render();}
-    else if (input.id === "planning-training") {
-      const next = clone(); next.forecast = {...(state.forecast || M.defaultForecast()), includeTraining: input.checked};
-      save(next, "Training inclusion updated.");
-    }
     else if (input.id === "service-filter") {serviceFilter = input.value; render();}
     else if (input.name === "pool" && editContext?.kind === "training") {
       const hardware = M.skuInfo(input.value);
