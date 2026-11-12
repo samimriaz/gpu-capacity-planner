@@ -60,7 +60,7 @@ by the Service, Organization, GPU SKU, and planning-start filters, then the
 scenario controls. The planner separates **Inference** and **Training**, with
 inference GPU need, training GPU need, total demand and combined supply shortage
 at the top. The small explanation example uses 3 inference GPUs and 6 training
-GPUs: 9 total. Have is 2 inference GPUs and 4 training GPUs; budgets default
+GPUs: 9 total. Current allocated GPUs are 2 for inference and 4 for training; budgets default
 to the needs of 3 and 6, leaving gaps of 1 and 2.
 These are teaching numbers, not benchmark measurements.
 
@@ -108,19 +108,19 @@ add fleet telemetry ingestion or multi-model service support.
   plans outside the horizon is capped at the horizon endpoints and those
   plans remain excluded from horizon totals. Missing growth defaults to zero,
   preserving existing workspaces. Rescheduling recomputes the growth factor.
-- Each segment shows **Have → Forecast need → Budget → Gap** in that order.
+- Each segment shows **Current allocated GPUs → Forecast need → Budget → Gap** in that order.
   **Budget follows forecast need automatically**, including growth edits.
   **Edit budget** creates a fixed GPU-count override only for the selected
   month, SKU and service/organization scope. Blank fields follow the forecast;
   zero is an explicit manual budget. **Reset budget to forecast** clears
   overrides for the selected month and scope. Manual budgets never change
   forecast need; budgets below need can leave demand unfunded.
-- **Inference Have is populated from existing allocation records.** For each
+- **Current allocated inference GPUs are populated from existing allocation records.** For each
   selected service, take its highest daily allocated GPU-hours before planning
   start, divide by 24 and round up to whole GPUs. Sum those retained allocations
   by SKU and owning organization. This is a conservative no-reclamation policy:
   lower traffic, GPU activity or subsequent daily allocations do not take GPUs
-  back from a team. Have stays fixed throughout the forecast, independently of
+  back from a team. Current allocated GPUs stay fixed throughout the forecast, independently of
   growth, budget edits and training inclusion. It is derived from daily allocation
   records, not an exact live inventory snapshot. Current service ownership and
   SKU apply; effective-dated service migrations are not modeled.
@@ -129,26 +129,27 @@ add fleet telemetry ingestion or multi-model service support.
   inventory corrections and take precedence over derived records at company
   scope. Clearing the inference correction restores the recorded baseline.
   Existing percentage splits remain saved company allocation baselines, not
-  forecast budgets. Under service/organization filters, inference Have uses
+  forecast budgets. Under service/organization filters, current allocated inference GPUs use
   only that scope's recorded allocations, not the entire company count.
 - Training has **no separate recorded allocation history** in the existing
   workspace. Future scheduled runs are requirements, not proof of GPUs already
-  assigned. Training Have remains explicitly unavailable until a real company
+  assigned. Current allocated training GPUs remain explicitly unavailable until a real company
   training allocation baseline is saved. Company training baselines are not
-  attributed to individual teams; scoped training Have remains unavailable.
+  attributed to individual teams; scoped current allocated training GPUs remain unavailable.
   Missing inference allocation history also remains unavailable, not zero.
 - Explicit company allocation counts must fit usable supply at planning start.
   If recorded allocations exceed supply in a scenario, a conflict is shown
   rather than silently capping or reclaiming recorded allocations. Future
   additions increase company supply but are not assigned to a team automatically.
-- **Segment gap = Budget - Have.** Positive means capacity to add to that
+- **Segment gap = Budget - Current allocated GPUs.** Positive means capacity to add to that
   segment; negative means capacity retained by that team, not capacity released
   for other teams to borrow. Budgets are scoped to the filtered demand.
   The combined shortage KPI sums positive per-SKU
   `(inference budget + training budget - total usable supply)` values.
   It includes unassigned supply and future additions, so it can differ from
   segment gaps. Spare capacity on other SKUs never offsets a shortage.
-- JSON forecasts and requirements CSVs include Have, allocation source
+- JSON forecasts and requirements CSVs include current allocated GPUs (the existing
+  `inferenceHave` and `trainingHave` fields), allocation source
   (`recorded-allocation`, `entered-allocation`, or `missing`), supply conflict
   flags, budget, budget source
   (`forecast`, `manual`, or training `excluded`), segment gaps and completeness
