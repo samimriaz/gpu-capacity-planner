@@ -53,7 +53,8 @@
   }
   function activePools(state) {
     return POOLS.filter(p => state.supply[p].installed > 0 || state.services.some(s => s.pool === p) ||
-      state.training.some(t => t.pool === p) || state.supply.additions.some(a => a.pool === p));
+      state.training.some(t => t.pool === p) || state.supply.additions.some(a => a.pool === p) ||
+      state.segmentBudgets?.some(b => b.pool === p));
   }
   function defaultDrivers() {
     return {activeUsers: 10000000, sessionsPerUser: 2, requestsPerSession: 5,
@@ -189,10 +190,42 @@
       number(s.unavailable, "Unavailable GPUs", 0, s.installed, true);
       number(s.reserve, "Protected reserve GPUs", 0, s.installed - s.unavailable, true);
       if (s.inferenceBudgetPct !== undefined) number(s.inferenceBudgetPct, "Inference capacity budget %", 0, 100);
+      for (const kind of ["inference", "training"]) {
+        if (s[`${kind}Available`] !== undefined) number(s[`${kind}Available`], `${kind} available GPUs`, 0, 1e9, true);
+      }
     }
     if (state.supply.additions.length > 1000) fail("Too many capacity additions.");
     state.supply.additions.forEach(a => { pool(a.pool); month(a.month); number(a.gpus, "Commissioned addition", 1, 1e7, true); });
+    for (const p of POOLS) {
+      const capacity = segmentCapacity(state, p);
+      if ((capacity.inference ?? 0) + (capacity.training ?? 0) > capacity.usable) {
+        fail(`Inference and training available counts exceed usable supply for ${p} at planning start.`);
+      }
+    }
+    if (state.segmentBudgets !== undefined) {
+      if (!Array.isArray(state.segmentBudgets) || state.segmentBudgets.length > 20000) fail("At most 20,000 segment budget overrides are supported.");
+      const budgets = new Set();
+      for (const b of state.segmentBudgets) {
+        pool(b.pool); month(b.month);
+        if (b.serviceId !== "all" && !state.services.some(s => s.id === b.serviceId)) fail("Budget references an unknown service.");
+        if (b.team !== "all" && !state.services.some(s => s.team === b.team)) fail("Budget references an unknown organization.");
+        if (b.serviceId !== "all" && b.team !== "all" && !state.services.some(s => s.id === b.serviceId && s.team === b.team)) fail("Budget service and organization do not match.");
+        if (b.inference === undefined && b.training === undefined) fail("Budget override requires an inference or training target.");
+        for (const kind of ["inference", "training"]) if (b[kind] !== undefined) number(b[kind], `${kind} GPU budget`, 0, 1e9, true);
+        const key = JSON.stringify([b.pool, b.month, b.serviceId, b.team]);
+        if (budgets.has(key)) fail("Duplicate segment budget override.");
+        budgets.add(key);
+      }
+    }
     return state;
+  }
+  function segmentCapacity(state, p) {
+    const supply = state.supply[p];
+    const usable = supply.installed - supply.unavailable - supply.reserve +
+      state.supply.additions.filter(a => a.pool === p && a.month <= state.startMonth).reduce((n, a) => n + a.gpus, 0);
+    const legacyInference = supply.inferenceBudgetPct === undefined ? null : Math.floor(usable * supply.inferenceBudgetPct / 100);
+    return {usable, inference: supply.inferenceAvailable ?? legacyInference,
+      training: supply.trainingAvailable ?? (legacyInference === null ? null : usable - legacyInference)};
   }
   function months(start, count = 6) {
     month(start);
@@ -437,13 +470,21 @@
         const required = inferenceGpus + trainingGpus;
         const inferenceComplete = entries.every(e => e.available) && estimates.every(e => e.available);
         const trainingComplete = trainingCounts.every(Number.isSafeInteger);
-        const inferenceBudget = supply.inferenceBudgetPct === undefined ? null : Math.floor(usable * supply.inferenceBudgetPct / 100);
-        const trainingBudget = inferenceBudget === null ? null : usable - inferenceBudget;
+        const have = segmentCapacity(state, p);
+        const override = state.segmentBudgets?.find(b => b.pool === p && b.month === m &&
+          b.serviceId === selectedId && b.team === selectedTeam);
+        const inferenceBudget = override?.inference ?? (inferenceComplete ? inferenceGpus : null);
+        const trainingBudget = !options.includeTraining ? 0 : override?.training ?? (trainingComplete ? trainingGpus : null);
+        const budgetRequired = inferenceBudget === null || trainingBudget === null ? null : inferenceBudget + trainingBudget;
         return {month: m, pool: p, baselineInference, inference: inferenceGpus, training: trainingGpus, required,
           usable, gap: required - usable, missing, complete: missing === 0, estimates,
           inferenceComplete, trainingComplete, inferenceBudget, trainingBudget,
-          inferenceGap: inferenceComplete && inferenceBudget !== null ? inferenceGpus - inferenceBudget : null,
-          trainingGap: trainingComplete && trainingBudget !== null ? trainingGpus - trainingBudget : null};
+          inferenceHave: have.inference, trainingHave: have.training,
+          inferenceBudgetSource: override?.inference !== undefined ? "manual" : "forecast",
+          trainingBudgetSource: !options.includeTraining ? "excluded" : override?.training !== undefined ? "manual" : "forecast",
+          inferenceGap: inferenceBudget !== null && have.inference !== null ? inferenceBudget - have.inference : null,
+          trainingGap: trainingBudget !== null && have.training !== null ? trainingBudget - have.training : null,
+          budgetRequired, budgetGap: budgetRequired === null ? null : budgetRequired - usable};
       });
       return {month: m, pools, baselineRequired: pools.reduce((n, p) => n + p.baselineInference, 0),
         required: pools.reduce((n, p) => n + p.required, 0), usable: pools.reduce((n, p) => n + p.usable, 0),
@@ -750,7 +791,7 @@
   }
   const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
-    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, moveTraining, training, portfolio, comparePeriods, demo};
+    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

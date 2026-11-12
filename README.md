@@ -60,7 +60,8 @@ by the Service, Organization, GPU SKU, and planning-start filters, then the
 scenario controls. The planner separates **Inference** and **Training**, with
 inference GPU need, training GPU need, total demand and combined supply shortage
 at the top. The small explanation example uses 3 inference GPUs and 6 training
-GPUs: 9 total, against separate budgets of 2 and 4, leaving gaps of 1 and 2.
+GPUs: 9 total. Have is 2 inference GPUs and 4 training GPUs; budgets default
+to the needs of 3 and 6, leaving gaps of 1 and 2.
 These are teaching numbers, not benchmark measurements.
 
 The inference section forecasts service traffic and GPU requirements. The
@@ -107,20 +108,38 @@ add fleet telemetry ingestion or multi-model service support.
   plans outside the horizon is capped at the horizon endpoints and those
   plans remain excluded from horizon totals. Missing growth defaults to zero,
   preserving existing workspaces. Rescheduling recomputes the growth factor.
-- **Set capacity budgets** assigns an inference percentage per GPU SKU;
-  training gets the remainder. Each month applies that split to usable supply,
-  including commissioned additions. Inference rounds down to whole GPUs and
-  training gets the remainder, so budgets sum exactly to usable supply.
-  Existing workspaces have no assigned split: segment gaps stay unavailable
-  until budgets are entered, while the combined fleet gap remains visible.
-  Budgets stay company-wide when demand is filtered by organization or service.
-  Positive segment gaps require extra capacity or an explicit budget transfer;
-  no automatic borrowing occurs. Combined gaps net spare capacity between
-  segments within each SKU. The shortage KPI sums positive SKU gaps without
-  offsetting them against spare capacity on other SKUs.
-- JSON forecasts and requirements CSVs include inference/training budgets,
-  gaps and completeness flags. Workspace JSON preserves budget percentages
-  and training run-growth assumptions.
+- Each segment shows **Have → Forecast need → Budget → Gap** in that order.
+  **Budget follows forecast need automatically**, including growth edits.
+  **Edit budget** creates a fixed GPU-count override only for the selected
+  month, SKU and service/organization scope. Blank fields follow the forecast;
+  zero is an explicit manual budget. **Reset budget to forecast** clears
+  overrides for the selected month and scope. Manual budgets never change
+  forecast need; budgets below need can leave demand unfunded.
+- **Enter available GPUs** records inference and training counts separately
+  by SKU. Have stays fixed across the horizon until edited. Counts may leave
+  supply unassigned, but their sum must not exceed usable company supply at
+  planning start. That supply includes additions ready by planning start.
+  Later additions increase total company supply but are not automatically
+  assigned to either segment. Blank Have means unknown, while zero is known
+  zero; unknown Have leaves the segment gap unavailable.
+- **Segment gap = Budget - Have.** Positive means capacity to add to that
+  segment; negative means spare against budget. Have is company-wide even
+  under service/organization filters, not a team quota. Budgets are scoped
+  to the filtered demand. The combined shortage KPI sums positive per-SKU
+  `(inference budget + training budget - total usable supply)` values.
+  It includes unassigned supply and future additions, so it can differ from
+  segment gaps. Spare capacity on other SKUs never offsets a shortage.
+- Existing percentage splits are retained as starting available counts,
+  not forecast budgets. Saving explicit Have counts replaces the old split.
+  No new available counts are invented for workspaces without a split.
+- JSON forecasts and requirements CSVs include Have, budget, budget source
+  (`forecast`, `manual`, or training `excluded`), segment gaps and completeness
+  flags. `gap` remains the forecast need minus all usable supply; the separate
+  `budgetGap` uses budget targets instead. Workspace JSON preserves optional
+  `inferenceAvailable`/`trainingAvailable` supply counts, scoped `segmentBudgets`
+  overrides, and training growth. Missing budget overrides always follow need.
+  Excluding training sets its active need and budget to zero without deleting
+  its stored overrides or available GPUs; re-enabling restores them.
 - Drag a training card to another month. A month selector provides the same
   action without dragging. Active run days stay unchanged; a 31-day run cannot
   move into February.

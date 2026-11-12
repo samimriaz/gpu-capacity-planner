@@ -52,16 +52,20 @@ test("training growth compounds to schedule, rounds runs and does not create rec
   assert.equal(M.training(plan, state.startMonth).gang, base.gang);
 });
 
-test("unassigned segment budgets remain unknown without altering combined supply", () => {
+test("budgets default to forecast need while unentered Have leaves gaps unknown", () => {
   const state = M.demo(), pool = M.bottomUpForecast(state).monthly[0].pools[0];
-  assert.equal(pool.inferenceBudget, null);
-  assert.equal(pool.trainingBudget, null);
+  assert.equal(pool.inferenceBudget, pool.inference);
+  assert.equal(pool.trainingBudget, pool.training);
+  assert.equal(pool.inferenceBudgetSource, "forecast");
+  assert.equal(pool.trainingBudgetSource, "forecast");
+  assert.equal(pool.inferenceHave, null);
+  assert.equal(pool.trainingHave, null);
   assert.equal(pool.inferenceGap, null);
   assert.equal(pool.trainingGap, null);
   assert.equal(pool.gap, pool.required - pool.usable);
 });
 
-test("segment budgets divide usable SKU supply including additions without double counting", () => {
+test("legacy percentage splits preserve starting available capacity, not forecast budgets", () => {
   const state = M.demo(), sku = state.services[0].pool;
   state.supply[sku] = {installed: 11, unavailable: 1, reserve: 1, inferenceBudgetPct: 50};
   state.supply.additions.push({pool: sku, month: state.startMonth, gpus: 2});
@@ -69,27 +73,31 @@ test("segment budgets divide usable SKU supply including additions without doubl
   const report = M.bottomUpForecast(M.validate(state));
   const pool = report.monthly[0].pools.find(p => p.pool === sku);
   assert.equal(pool.usable, 11);
-  assert.equal(pool.inferenceBudget, 5);
-  assert.equal(pool.trainingBudget, 6);
+  assert.equal(pool.inferenceHave, 5);
+  assert.equal(pool.trainingHave, 6);
+  assert.equal(pool.inferenceBudget, pool.inference);
+  assert.equal(pool.trainingBudget, pool.training);
   assert.equal(pool.inferenceGap, pool.inference - 5);
   assert.equal(pool.trainingGap, pool.training - 6);
   assert.equal(pool.inferenceGap + pool.trainingGap, pool.gap);
   assert.equal(JSON.stringify(state), before);
   const scoped = M.bottomUpForecast(state, state.services[0].id).monthly[0].pools.find(p => p.pool === sku);
-  assert.equal(scoped.inferenceBudget, pool.inferenceBudget);
+  assert.equal(scoped.inferenceBudget, scoped.inference);
+  assert.equal(scoped.inferenceHave, pool.inferenceHave);
 });
 
-test("zero and full inference budgets allocate all remaining capacity to training correctly", () => {
+test("legacy zero and full splits preserve available capacity correctly", () => {
   const state = M.demo(), sku = state.services[0].pool;
   for (const pct of [0, 100]) {
     state.supply[sku].inferenceBudgetPct = pct;
     const p = M.capacityForecast(state).monthly[0].pools.find(p => p.pool === sku);
-    assert.equal(p.inferenceBudget, pct === 0 ? 0 : p.usable);
-    assert.equal(p.trainingBudget, p.usable - p.inferenceBudget);
+    assert.equal(p.inferenceHave, pct === 0 ? 0 : p.usable);
+    assert.equal(p.trainingHave, p.usable - p.inferenceHave);
+    assert.equal(p.inferenceBudget, p.inference);
   }
 });
 
-test("training exclusion leaves its budget intact and inference demand unchanged", () => {
+test("training exclusion zeros active budget while leaving Have and inference unchanged", () => {
   const state = M.demo(), sku = state.training[0].pool;
   state.training[0].scenarioGrowthPct = 100;
   state.supply[sku].inferenceBudgetPct = 75;
@@ -100,7 +108,8 @@ test("training exclusion leaves its budget intact and inference demand unchanged
     assert.equal(m.training, 0);
     assert.equal(m.inference, before.monthly[i].inference);
     const p = m.pools.find(p => p.pool === sku);
-    assert.equal(p.trainingGap, -p.trainingBudget);
+    assert.equal(p.trainingBudget, 0);
+    assert.equal(p.trainingGap, -p.trainingHave);
   }
 });
 
@@ -122,7 +131,111 @@ test("incomplete inference sizing leaves its gap unknown while training gap rema
   assert.equal(p.inferenceComplete, false);
   assert.equal(p.inferenceGap, null);
   assert.equal(p.trainingComplete, true);
-  assert.equal(p.trainingGap, p.training - p.trainingBudget);
+  assert.equal(p.trainingGap, p.trainingBudget - p.trainingHave);
+});
+
+test("manual budget overrides are scoped by month, service, organization and GPU SKU", () => {
+  const state = M.demo(), service = state.services[0], month = M.months(state.startMonth)[1];
+  state.supply[service.pool].inferenceAvailable = 10;
+  state.supply[service.pool].trainingAvailable = 20;
+  state.segmentBudgets = [{pool: service.pool, month, serviceId: "all", team: "all", inference: 15, training: 25}];
+  const report = M.bottomUpForecast(M.validate(state));
+  const p = report.monthly[1].pools.find(p => p.pool === service.pool);
+  assert.equal(p.inferenceBudget, 15);
+  assert.equal(p.trainingBudget, 25);
+  assert.equal(p.inferenceGap, 5);
+  assert.equal(p.trainingGap, 5);
+  assert.equal(p.budgetRequired, 40);
+  assert.equal(p.budgetGap, 40 - p.usable);
+  assert.equal(p.inferenceBudgetSource, "manual");
+  const first = report.monthly[0].pools.find(p => p.pool === service.pool);
+  assert.equal(first.inferenceBudget, first.inference);
+  const scoped = M.bottomUpForecast(state, service.id).monthly[1].pools.find(p => p.pool === service.pool);
+  assert.equal(scoped.inferenceBudget, scoped.inference);
+  const org = M.bottomUpForecast(state, "all", service.team).monthly[1].pools.find(p => p.pool === service.pool);
+  assert.equal(org.inferenceBudget, org.inference);
+  assert.ok(report.monthly[1].pools.filter(p => p.pool !== service.pool).every(p => p.inferenceBudget === p.inference));
+});
+
+test("automatic budgets follow forecast growth while manual budgets remain fixed", () => {
+  const state = M.demo(), service = state.services[0], month = M.months(state.startMonth)[5];
+  state.segmentBudgets = [{pool: service.pool, month, serviceId: "all", team: "all", inference: 123}];
+  const before = M.bottomUpForecast(state);
+  service.scenarioGrowthPct = 100;
+  state.training[0].scenarioGrowthPct = 100;
+  const after = M.bottomUpForecast(state);
+  assert.equal(after.monthly[5].pools.find(p => p.pool === service.pool).inferenceBudget, 123);
+  assert.ok(after.monthly[5].inference > before.monthly[5].inference);
+  for (const [i, m] of after.monthly.entries()) for (const p of m.pools) {
+    if (i !== 5 || p.pool !== service.pool) assert.equal(p.inferenceBudget, p.inference);
+    assert.equal(p.trainingBudget, p.training);
+  }
+  const roundTrip = M.validate(JSON.parse(JSON.stringify(state)));
+  assert.deepEqual(roundTrip.segmentBudgets, state.segmentBudgets);
+  delete roundTrip.segmentBudgets;
+  const reset = M.bottomUpForecast(roundTrip).monthly[5].pools.find(p => p.pool === service.pool);
+  assert.equal(reset.inferenceBudget, reset.inference);
+  assert.equal(reset.inferenceBudgetSource, "forecast");
+});
+
+test("available counts remain fixed despite future additions and do not have to exhaust supply", () => {
+  const state = M.demo(), sku = state.services[0].pool;
+  state.supply[sku] = {installed: 20, unavailable: 2, reserve: 2, inferenceAvailable: 4, trainingAvailable: 6};
+  state.supply.additions = [{pool: sku, month: M.months(state.startMonth)[2], gpus: 10}];
+  const report = M.bottomUpForecast(M.validate(state));
+  for (const [i, m] of report.monthly.entries()) {
+    const p = m.pools.find(p => p.pool === sku);
+    assert.equal(p.inferenceHave, 4);
+    assert.equal(p.trainingHave, 6);
+    assert.equal(p.usable, i < 2 ? 16 : 26);
+    assert.equal(p.inferenceGap, p.inferenceBudget - 4);
+  }
+});
+
+test("invalid or duplicate overrides and double-counted available GPUs are rejected", () => {
+  const state = M.demo(), sku = state.services[0].pool;
+  state.supply[sku] = {installed: 6, unavailable: 0, reserve: 0, inferenceAvailable: 4, trainingAvailable: 3};
+  state.supply.additions = [];
+  assert.throws(() => M.validate(state), /exceed usable supply/);
+  state.supply[sku].trainingAvailable = 2;
+  state.segmentBudgets = [{pool: sku, month: state.startMonth, serviceId: "all", team: "all", inference: -1}];
+  assert.throws(() => M.validate(state), /GPU budget/);
+  state.segmentBudgets[0].inference = 0.5;
+  assert.throws(() => M.validate(state), /GPU budget/);
+  state.segmentBudgets[0].inference = 0;
+  assert.doesNotThrow(() => M.validate(state));
+  state.segmentBudgets.push({...state.segmentBudgets[0]});
+  assert.throws(() => M.validate(state), /Duplicate segment budget/);
+});
+
+test("manual targets do not fabricate missing forecast need", () => {
+  const state = M.demo(), service = state.services[0];
+  state.records = state.records.filter(r => r.serviceId !== service.id);
+  state.supply[service.pool].inferenceAvailable = 2;
+  const p = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === service.pool);
+  assert.equal(p.inferenceBudget, null);
+  assert.equal(p.inferenceGap, null);
+  state.segmentBudgets = [{pool: service.pool, month: state.startMonth, serviceId: "all", team: "all", inference: 3}];
+  const manual = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === service.pool);
+  assert.equal(manual.inferenceComplete, false);
+  assert.equal(manual.inferenceBudget, 3);
+  assert.equal(manual.inferenceGap, 1);
+});
+
+test("training exclusion preserves a zero manual target and restores it when re-enabled", () => {
+  const state = M.demo(), plan = state.training[0];
+  state.segmentBudgets = [{pool: plan.pool, month: plan.month, serviceId: "all", team: "all", training: 0}];
+  const get = () => M.bottomUpForecast(state).monthly.find(m => m.month === plan.month).pools.find(p => p.pool === plan.pool);
+  assert.equal(get().trainingBudget, 0);
+  assert.equal(get().trainingBudgetSource, "manual");
+  assert.ok(get().training > 0);
+  state.forecast = {...M.defaultForecast(), includeTraining: false};
+  assert.equal(get().trainingBudgetSource, "excluded");
+  assert.equal(state.segmentBudgets[0].training, 0);
+  state.forecast.includeTraining = true;
+  assert.equal(get().trainingBudgetSource, "manual");
+  assert.equal(get().trainingBudget, 0);
+  assert.ok(get().training > 0);
 });
 
 test("service rows expose names, current observed demand and all monthly GPU estimates", () => {

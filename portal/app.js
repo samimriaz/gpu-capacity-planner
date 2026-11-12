@@ -279,17 +279,17 @@
       <p>For a common growth index, multiply each workload's GPU count by its own selected-SKU/H100 throughput ratio, then add those H100 equivalents. Normalization compares the plan; it does not change the required SKU counts or normalize idle inventory.</p></div>`;
   }
   function forecastLogicPanel(workspace, report) {
-    return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Two separate forecasts: inference growth and training growth. Add their GPU requirements at the top, then compare each with its own capacity budget.</p></div></div>
+    return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Two separate forecasts: inference growth and training growth. For each, show what we have, forecast need, budget and the capacity gap.</p></div></div>
       <ol class="logic-steps">
         <li><h3>1. Inference forecast</h3><p>Grow each service's request rate. Divide by its usable serving throughput, round up model copies, then multiply by GPUs per copy. Add service GPU needs by SKU.</p></li>
         <li><h3>2. Training forecast</h3><p>Grow concurrent training runs. Keep each run's model, tokens and active days fixed. Round up whole runs and multiply by GPUs per run. Plans contribute only in their scheduled month.</p></li>
-        <li><h3>3. Total demand and gaps</h3><p><strong>Inference GPUs + training GPUs = total demand.</strong> Compare each segment with its budget for the same SKU. Positive gaps need more capacity or an explicit budget transfer; spare capacity is not moved automatically.</p></li>
+        <li><h3>3. Have, need, budget and gap</h3><p><strong>Budget = forecast need</strong> until someone overrides it. <strong>Gap = budget - Have.</strong> Add inference and training needs for total demand, keeping GPU SKUs separate. Manual budgets do not change the forecast.</p></li>
       </ol>
       <div class="logic-key" id="service-growth-example"><h3>A small example for month six</h3>
         <p>Illustrative numbers, not hardware benchmarks. All GPUs here are the same SKU, model copies use one GPU, and both segments can run at the same time.</p>
         <p><strong>Inference:</strong> 8 requests/sec grows 50% to 12. Each GPU safely handles 4 requests/sec, already allowing headroom. <strong>12 / 4 = 3 GPUs.</strong></p>
         <p><strong>Training:</strong> 2 concurrent runs grow 50% to 3. Each run needs 2 GPUs. <strong>3 x 2 = 6 GPUs.</strong></p>
-        <p><strong>Total demand: 3 + 6 = 9 GPUs.</strong> With an inference budget of 2 and a training budget of 4, the gaps are <strong>1 inference GPU + 2 training GPUs = 3 GPUs short.</strong></p>
+        <p><strong>Inference:</strong> Have 2, need 3, budget automatically 3, gap 1.<br><strong>Training:</strong> Have 4, need 6, budget automatically 6, gap 2.<br><strong>Total demand: 3 + 6 = 9 GPUs; 3 GPUs short.</strong> If someone changes the training budget to 5, its budget gap becomes 1, but forecast need stays 6.</p>
       </div>
       <p class="logic-key"><strong>For one-GPU model copies: future requests/second / usable requests/second per GPU = GPUs needed, rounded up.</strong> For copies needing several GPUs, divide by the measured throughput of the whole copy, round up copies, then multiply by GPUs per copy. Size different models or configurations separately before rolling up a service. Count shared serving pools only once.</p>
       <p class="logic-key">Both growth controls mean extra demand by month six, compounded to each forecast month; they are not monthly growth rates. Current traffic alone does not prove sustainable throughput. Unknown capacity means an assumption-based scenario. Keep totals split by SKU; spare GPUs of a different SKU are not automatic substitutes.</p>
@@ -374,13 +374,18 @@
       `<section class="panel"><div class="panel-heading"><div><h2>Inference and training models</h2><p>Inference uses ${focused.month}; training shows each scheduled month. Double-click a model row for details.</p></div></div>${table(["Model / evidence", "Workload", "Month", "Assigned SKU", "GPUs", "H100 equivalents", "Benchmark ratio", ""], models)}</section>`;
     const selected = workspace.services.find(s => s.id === serviceFilter);
     const detail = selected ? `<section class="panel"><div class="panel-heading"><h2>${esc(selected.name)}: model assumptions</h2><button class="button subtle" data-edit-service="${esc(selected.id)}">Edit model inputs</button></div><div class="panel-body description">${esc(selected.profile)}<br>Configuration: ${esc(selected.workloadKey)}. Input / output tokens: ${fmt(selected.inputTokens)} / ${fmt(selected.outputTokens)}. Extra demand by month six: ${pct(selected.scenarioGrowthPct ?? 0)}.<br>H100 equivalents compare this workload only. Divide its equivalent count by its own benchmark ratio to recover its assigned-SKU GPU count; replica rounding has already been applied.</div></section>` : "";
-    const gapText = value => value === null ? "Set budget / check inputs" : value > 0 ? `${fmt(value)} short` : `${fmt(-value)} spare`;
-    const shortage = focused.physicalComplete ? focused.pools.reduce((n, p) => n + Math.max(0, p.gap), 0) : null;
-    const budgets = table(["GPU SKU", "Inference need", "Inference budget", "Inference gap", "Training need", "Training budget", "Training gap", "Total need", "Total usable", "Combined gap / spare"],
-      focused.pools.map(p => `<tr><td>${esc(skuName(p.pool))}</td><td>${p.inferenceComplete ? fmt(p.inference) : "Partial"}</td><td>${fmt(p.inferenceBudget)}</td><td>${gapText(p.inferenceGap)}</td><td>${p.trainingComplete ? fmt(p.training) : "Partial"}</td><td>${fmt(p.trainingBudget)}</td><td>${gapText(p.trainingGap)}</td><td>${p.complete ? fmt(p.required) : "Partial"}</td><td>${fmt(p.usable)}</td><td>${p.complete ? gapText(p.gap) : "Partial"}</td></tr>`).join(""));
-    return `<div id="planning-summary"><div class="kpis">${metric(`Inference GPUs: ${focused.month}`, fmt(focused.pools.every(p => p.inferenceComplete) ? focused.inference : null), "Service request growth converted into physical GPUs", true)}${metric("Training GPUs", fmt(focused.pools.every(p => p.trainingComplete) ? focused.training : null), report.options.includeTraining ? "Concurrent run growth; fixed work per run" : "Excluded from this scenario")}${metric("Total GPU demand", fmt(focused.physicalComplete ? focused.required : null), `${fmt(focused.inference)} inference + ${fmt(focused.training)} training${focused.physicalComplete ? "" : " (known subtotals only)"}`)}${metric("Combined supply shortage", fmt(shortage), "Sum of positive SKU gaps; no cross-SKU substitution")}</div>${partial}
-      <section class="panel" id="segment-budget-summary"><div class="panel-heading"><div><h2>Inference + training: demand and capacity gaps</h2><p>${focused.month}. Physical GPUs. Positive segment gaps require capacity or a budget transfer even if the combined fleet has spare GPUs. Budgets split usable supply including additions.</p></div><button class="button subtle" data-action="budgets">Set capacity budgets</button></div><div class="panel-body"><p class="help">Unset budgets leave segment gaps unavailable. Under service or organization filters, demand is scoped but budgets remain company-wide; they are not team quotas. Combined gaps net spare capacity between segments within a SKU; segment gaps do not.</p></div>${budgets}</section>
-      <section class="panel" id="inference-forecast"><div class="panel-heading"><div><h2>1. Inference: service growth and GPU forecast</h2><p>Edit service growth below. Each service keeps its own SKU and serving throughput; GPUs are sized separately before adding them.</p></div></div><div class="chart-wrap">${chart(report.monthly.map(m => ({month: m.month, demand: subtotal(m, "inference")})), [{key: "demand", name: "Inference GPU demand", color: "var(--accent)"}], normalized ? "Inference forecast in H100 equivalents" : "Inference forecast in physical GPUs", 0)}</div></section>
+    const gapText = value => value === null ? "Enter Have / check forecast" : value > 0 ? `${fmt(value)} short` : value < 0 ? `${fmt(-value)} spare` : "No gap";
+    const shortage = focused.pools.every(p => p.budgetGap !== null) ? focused.pools.reduce((n, p) => n + Math.max(0, p.budgetGap), 0) : null;
+    const segmentTable = kind => table(["GPU SKU", "Have", "Forecast need", "Budget", "Gap (budget - have)"],
+      focused.pools.map(p => `<tr data-segment="${kind}" data-segment-pool="${esc(p.pool)}"><td>${esc(skuName(p.pool))}</td><td>${p[`${kind}Have`] === null ? "Not entered" : fmt(p[`${kind}Have`])}</td><td>${p[`${kind}Complete`] ? fmt(p[kind]) : "Partial"}</td><td>${fmt(p[`${kind}Budget`])}<span class="subtext">${p[`${kind}BudgetSource`] === "manual" ? "Manual override" : p[`${kind}BudgetSource`] === "excluded" ? "Excluded" : "Follows forecast"}</span></td><td>${gapText(p[`${kind}Gap`])}</td></tr>`).join(""));
+    return `<div id="planning-summary"><div class="kpis">${metric(`Inference GPUs: ${focused.month}`, fmt(focused.pools.every(p => p.inferenceComplete) ? focused.inference : null), "Service request growth converted into physical GPUs", true)}${metric("Training GPUs", fmt(focused.pools.every(p => p.trainingComplete) ? focused.training : null), report.options.includeTraining ? "Concurrent run growth; fixed work per run" : "Excluded from this scenario")}${metric("Total GPU demand", fmt(focused.physicalComplete ? focused.required : null), `${fmt(focused.inference)} inference + ${fmt(focused.training)} training${focused.physicalComplete ? "" : " (known subtotals only)"}`)}${metric("Budget vs company supply shortage", fmt(shortage), "Sum of positive SKU budget gaps against all usable supply")}</div>${partial}
+      <section class="panel" id="segment-budget-summary"><div class="panel-heading"><div><h2>Have → Need → Budget → Gap</h2><p>${focused.month}. Physical GPUs. Budget follows forecast need automatically unless overridden. Gap = budget minus available GPUs in that segment.</p></div><div><button class="button subtle" data-action="capacity">Enter available GPUs</button><button class="button subtle" data-action="budgets">Edit budget</button><button class="text-button" data-reset-budgets>Reset budget to forecast</button></div></div>
+      <div class="panel-body"><h3>Inference</h3></div>${segmentTable("inference")}<div class="panel-body"><h3>Training</h3></div>${segmentTable("training")}
+      <div class="panel-body"><p class="help">Have is the available count entered for each segment at planning start, held constant until edited. Future additions stay unassigned to segments until you update these counts. Under service or organization filters, Have remains company-wide, not a team quota; budget overrides apply only to the selected scope and month. Missing Have leaves segment gaps unavailable. A manual budget does not change the forecast; a budget below need can leave forecast demand unfunded. The combined shortage uses all company supply, including additions, so it can differ from segment gaps.</p></div></section>
+      <section class="panel" id="inference-forecast"><div class="panel-heading"><div><h2>1. Inference: service growth and GPU forecast</h2><p>Edit service growth below. Each service keeps its own SKU and serving throughput; GPUs are sized separately before adding them. ${normalized ? "Budget and Have are physical GPU counts and are shown in the tables above, not on this normalized axis." : "Budget follows need until overridden. Have stays at the entered available count."}</p></div></div><div class="chart-wrap">${chart(report.monthly.map(m => ({month: m.month, demand: subtotal(m, "inference"),
+        budget: normalized || m.pools.some(p => p.inferenceBudget === null) ? null : m.pools.reduce((n, p) => n + p.inferenceBudget, 0),
+        have: normalized || m.pools.some(p => p.inferenceHave === null) ? null : m.pools.reduce((n, p) => n + p.inferenceHave, 0)})),
+        [{key: "demand", name: "Inference GPU need", color: "var(--accent)"}, {key: "budget", name: "Inference GPU budget", color: "var(--blue)"}, {key: "have", name: "Inference GPUs available", color: "var(--history)"}], normalized ? "Inference forecast in H100 equivalents" : "Inference forecast, budget and available physical GPUs", 0)}</div></section>
       <details class="panel" id="combined-history-details"><summary class="panel-body">Combined trend, historical comparison and normalization</summary>
       <div class="panel-body"><p>H100-equivalent requirement: ${fmt(focused.normalizedRequired, 1)}. Normalized growth month 1 to 6: ${pct(growth)}.</p></div>
       <section class="panel" id="bottom-up-demand-chart"><div class="panel-heading"><div><h2>Bottom-up demand: history + forecast</h2><p>${normalized ? "H100 SXM 80GB equivalents. Missing benchmark pairs leave gaps, not zeros." : "Individual GPUs. Mixed-SKU counts are physical totals, not equal-performance units."}</p></div></div><div class="panel-body"><div class="legend">${normalized || !hasHistory ? "" : '<span><i class="trend-key blue"></i>Recorded service assignments</span>'}<span><i class="trend-key forecast-key"></i>Inference forecast</span><span><i class="trend-key forecast-key amber"></i>Training plan</span><span><i class="trend-key forecast-key blue"></i>Total forecast</span></div><p class="help">${historyNote} Missing observations stay blank.</p></div><div class="chart-wrap">${chart(points, [{key: "inference", name: "Inference forecast", color: "var(--accent)"}, {key: "training", name: "Training plan", color: "var(--amber)"}, {key: "total", name: "Total forecast: inference + training", historyName: "Recorded service assignments (monthly maximum)", color: "var(--blue)"}], normalized ? "H100-equivalent capacity forecast by month; physical history unavailable on this scale" : "Twelve months of GPU assignments continuing into a dotted six-month total capacity forecast, with inference and training forecasts", report.historical.length)}</div></section>
@@ -397,11 +402,12 @@
     const points = report.monthly.map(m => {
       const pools = m.pools;
       return {month: m.month, demand: pools.every(p => p.trainingComplete) ? m.training : null,
-        budget: pools.every(p => p.trainingBudget !== null) ? pools.reduce((n, p) => n + p.trainingBudget, 0) : null};
+        budget: pools.every(p => p.trainingBudget !== null) ? pools.reduce((n, p) => n + p.trainingBudget, 0) : null,
+        have: pools.every(p => p.trainingHave !== null) ? pools.reduce((n, p) => n + p.trainingHave, 0) : null};
     });
     return `<section class="panel" id="training-segment"><div class="panel-heading"><div><h2>2. Training: run growth and GPU forecast</h2><p>${report.options.includeTraining ? "Included in total demand." : "Excluded from total demand; roadmap inputs remain editable."} Growth compounds to each plan's scheduled month, reaching the entered percentage in month six. Runs round up; model size, tokens and days per run stay fixed. All same-month runs are concurrent. Growth does not create recurring plans in empty months.</p></div><button class="button subtle" data-action="training">Add training plan</button></div>
-      <div class="chart-wrap">${chart(points, [{key: "demand", name: "Training GPU demand", color: "var(--amber)"}, {key: "budget", name: "Training GPU budget", color: "var(--blue)"}], "Training demand and budget in physical GPUs", 0)}</div>
-      <div class="panel-body"><p class="help">This chart always uses physical GPUs. Set capacity budgets above to show the budget line. Training growth is independent of inference growth.</p></div>
+      <div class="chart-wrap">${chart(points, [{key: "demand", name: "Training GPU need", color: "var(--amber)"}, {key: "budget", name: "Training GPU budget", color: "var(--blue)"}, {key: "have", name: "Training GPUs available", color: "var(--history)"}], "Training need, budget and available physical GPUs", 0)}</div>
+      <div class="panel-body"><p class="help">This chart always uses physical GPUs. Budget follows forecast need unless overridden; enter available GPUs to show Have. Training growth is independent of inference growth.</p></div>
       ${table(["Training plan / SKU", "Scheduled month", "Base concurrent runs", "Run growth", "Forecast runs", "GPUs per run", "Forecast GPUs", ""], rows)}
       <div class="training-scroll"><div class="training-board">${horizon.map(m => `<section class="training-lane" data-training-drop="${m}" aria-label="Training scheduled for ${m}"><h3>${m}</h3>${plans.filter(t => t.month === m).map(t => `<article class="training-drag-card" draggable="true" data-training-drag="${esc(t.id)}"><span class="help">Drag to reschedule</span><h3>${esc(t.name)}</h3><p>${fmt(M.training(t, workspace.startMonth).totalGpus)} GPUs<br><span class="help">${esc(skuName(t.pool))}</span></p><label class="help">Move to month<select data-training-month="${esc(t.id)}" aria-label="Move ${esc(t.name)} to month">${horizon.map(month => `<option ${month === m ? "selected" : ""}>${month}</option>`).join("")}</select></label><div class="form-actions"><button class="text-button" data-edit-training="${esc(t.id)}">Edit model</button>${calibrationButton("training", t)}</div></article>`).join("") || '<p class="help">Drop a training plan here.</p>'}</section>`).join("")}</div></div>
       ${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon and do not contribute. Open Training roadmap to see them.</p>' : ""}</section>`;
@@ -624,9 +630,17 @@
         field("bytesPerParameter", "Training-state bytes / parameter", t.bytesPerParameter, "number", 'min="1" max="100" step="any"', "Weights + gradients + optimizer state. Activations/buffers excluded; not proof of fit.") +
         field("block", "Topology rounding block (GPUs)", t.block, "number", 'min="1" max="65536" step="1"');
     } else if (kind === "budgets") {
-      title = "Split capacity between inference and training";
-      intro = "Set the inference percentage of each SKU's usable supply. Training gets the remainder. The split also applies to future usable additions; integer rounding goes to training. Blank means not assigned, so segment gaps stay unavailable. These are company budgets, not per-service quotas.";
-      fields = M.activePools(state).map(p => `<label>${esc(skuName(p))}: inference budget (%)<input name="${p}" type="number" min="0" max="100" step="0.1" value="${state.supply[p].inferenceBudgetPct ?? ""}"><span class="help">Training receives 100% minus this percentage.</span></label>`).join("");
+      title = `GPU budget for ${planningMonth}`;
+      intro = "Budget follows forecast need automatically. Enter a count only to override it; leave blank to keep following the forecast. Overrides apply to this month and the selected service/organization scope, not other months. A budget may exceed Have; the difference is the capacity gap.";
+      const focused = M.capacityForecast(state, serviceFilter, teamFilter, poolFilter).monthly.find(m => m.month === planningMonth);
+      fields = focused.pools.map(p => `<h3 class="wide">${esc(skuName(p.pool))}</h3>` + ["inference", "training"].map(kind => `<label>${kind === "inference" ? "Inference" : "Training"} budget (GPUs)<input name="${p.pool}_${kind}" type="number" min="0" max="1000000000" step="1" value="${p[`${kind}BudgetSource`] === "manual" ? p[`${kind}Budget`] : ""}" placeholder="${p[`${kind}Complete`] ? `Forecast: ${p[kind]}` : "Forecast unavailable"}" ${kind === "training" && !state.forecast?.includeTraining && state.forecast ? "disabled" : ""}><span class="help">Blank = follow forecast need. ${p[`${kind}Complete`] ? `Current need: ${fmt(p[kind])}.` : "Partial forecast: enter an explicit target or fix sizing inputs."}</span></label>`).join("")).join("");
+    } else if (kind === "capacity") {
+      title = "Available GPUs: what we have";
+      intro = "Enter currently available GPUs separately for inference and training by SKU. Counts stay fixed across the horizon until edited and must not exceed usable company supply at planning start. Blank means unknown, not zero. Future additions are not assigned automatically. Previously saved percentage splits are shown as starting available counts, not forecast budgets.";
+      fields = M.activePools(state).filter(p => poolFilter === "all" || p === poolFilter).map(p => {
+        const have = M.segmentCapacity(state, p);
+        return `<h3 class="wide">${esc(skuName(p))}: ${fmt(have.usable)} usable GPUs at planning start</h3>` + ["inference", "training"].map(kind => `<label>${kind === "inference" ? "Inference" : "Training"} available GPUs<input name="${p}_${kind}" type="number" min="0" max="1000000000" step="1" value="${have[kind] ?? ""}"></label>`).join("");
+      }).join("");
     } else if (kind === "supply") {
       title = "Edit organization supply";
       intro = "Physical counts by compatible pool. Unavailable and protected reserve are disjoint deductions. This is a scenario, not an inventory connector.";
@@ -698,9 +712,26 @@
         if (index >= 0) next.training[index] = t;
         else next.training.push(t);
       } else if (kind === "budgets") {
-        for (const p of M.activePools(next)) {
-          if (values[p] === "") delete next.supply[p].inferenceBudgetPct;
-          else next.supply[p].inferenceBudgetPct = Number(values[p]);
+        next.segmentBudgets ||= [];
+        for (const p of M.activePools(next).filter(p => poolFilter === "all" || p === poolFilter)) {
+          const index = next.segmentBudgets.findIndex(b => b.pool === p && b.month === planningMonth && b.serviceId === serviceFilter && b.team === teamFilter);
+          const budget = {...next.segmentBudgets[index], pool: p, month: planningMonth, serviceId: serviceFilter, team: teamFilter};
+          for (const segment of ["inference", "training"]) {
+            const value = values[`${p}_${segment}`];
+            if (value === "") delete budget[segment];
+            else if (value !== undefined) budget[segment] = Number(value);
+          }
+          if (index >= 0) next.segmentBudgets.splice(index, 1);
+          if (budget.inference !== undefined || budget.training !== undefined) next.segmentBudgets.push(budget);
+        }
+      } else if (kind === "capacity") {
+        for (const p of M.activePools(next).filter(p => poolFilter === "all" || p === poolFilter)) {
+          delete next.supply[p].inferenceBudgetPct;
+          for (const segment of ["inference", "training"]) {
+            const value = values[`${p}_${segment}`];
+            if (value === "") delete next.supply[p][`${segment}Available`];
+            else next.supply[p][`${segment}Available`] = Number(value);
+          }
         }
       } else if (kind === "supply") {
         for (const p of M.POOLS) for (const key of ["installed", "unavailable", "reserve"]) next.supply[p][key] = Number(values[`${p}_${key}`]);
@@ -739,7 +770,7 @@
     notice("Workspace JSON exported. It includes inputs and provenance, not live infrastructure state.");
   }
   function exportRequirements() {
-    const heads = ["month", "pool", "baselineInference", "inference", "training", "required", "usable", "gap", "inferenceBudget", "trainingBudget", "inferenceGap", "trainingGap", "inferenceComplete", "trainingComplete", "complete", "missing", "skuName", "memoryGB", "formFactor", "normalizedRequired", "normalizationMissing"];
+    const heads = ["month", "pool", "baselineInference", "inference", "training", "required", "usable", "gap", "inferenceHave", "inferenceBudget", "inferenceBudgetSource", "inferenceGap", "trainingHave", "trainingBudget", "trainingBudgetSource", "trainingGap", "budgetRequired", "budgetGap", "inferenceComplete", "trainingComplete", "complete", "missing", "skuName", "memoryGB", "formFactor", "normalizedRequired", "normalizationMissing"];
     const rows = M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter).monthly.flatMap(m => m.pools).map(r => ({...r, skuName: skuName(r.pool),
       memoryGB: M.skuInfo(r.pool).memoryGB ?? "Unspecified", formFactor: M.skuInfo(r.pool).formFactor}));
     const csv = [heads.join(","), ...rows.map(r => heads.map(h => String(r[h] ?? "")).join(","))].join("\r\n");
@@ -780,6 +811,12 @@
     else if (button.dataset.action) openEditor(button.dataset.action);
     else if (button.hasAttribute("data-export-workspace")) exportWorkspace();
     else if (button.hasAttribute("data-export-requirements")) exportRequirements();
+    else if (button.hasAttribute("data-reset-budgets")) {
+      const next = clone();
+      next.segmentBudgets = (next.segmentBudgets || []).filter(b => !(b.month === planningMonth &&
+        b.serviceId === serviceFilter && b.team === teamFilter && (poolFilter === "all" || b.pool === poolFilter)));
+      save(next, "Budgets reset to follow the forecast for this month and selected scope.");
+    }
     else if (button.hasAttribute("data-reset-forecast")) {
       const next = clone(); next.forecast = M.defaultForecast();
       save(next, "Forecast adjustments reset. Service plans are unchanged.");
