@@ -220,6 +220,15 @@
     }
     return state;
   }
+  // Current allocation per service: highest pre-plan daily GPU-hours / 24, rounded up; null without records.
+  function recordedAllocations(state, serviceIds) {
+    const allocations = new Map(serviceIds.map(id => [id, null]));
+    for (const r of state.records) {
+      if (r.date >= `${state.startMonth}-01` || !allocations.has(r.serviceId)) continue;
+      allocations.set(r.serviceId, Math.max(allocations.get(r.serviceId) ?? 0, Math.ceil(r.gpuHours / 24)));
+    }
+    return allocations;
+  }
   function segmentCapacity(state, p, selectedId = "all", selectedTeam = "all") {
     const supply = state.supply[p];
     const usable = supply.installed - supply.unavailable - supply.reserve +
@@ -227,11 +236,7 @@
     const legacyInference = supply.inferenceBudgetPct === undefined ? null : Math.floor(usable * supply.inferenceBudgetPct / 100);
     const services = state.services.filter(s => s.pool === p && (selectedId === "all" || s.id === selectedId) &&
       (selectedTeam === "all" || s.team === selectedTeam));
-    const allocations = new Map(services.map(s => [s.id, null]));
-    for (const r of state.records) {
-      if (r.date >= `${state.startMonth}-01` || !allocations.has(r.serviceId)) continue;
-      allocations.set(r.serviceId, Math.max(allocations.get(r.serviceId) ?? 0, Math.ceil(r.gpuHours / 24)));
-    }
+    const allocations = recordedAllocations(state, services.map(s => s.id));
     const recordedInference = [...allocations.values()].some(n => n === null) ? null :
       [...allocations.values()].reduce((sum, n) => sum + n, 0);
     const companyScope = selectedId === "all" && selectedTeam === "all";
@@ -809,7 +814,7 @@
   }
   const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
-    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo};
+    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, recordedAllocations, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

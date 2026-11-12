@@ -240,8 +240,8 @@ add fleet telemetry ingestion or multi-model service support.
   with the updated example after confirmation.
 - **Inference demand by service** is visible directly below the bottom-up demand
   chart, without opening organization drill-downs. It lists every service name,
-  owning organization, exact SKU, current observed peak requests/second, average
-  assigned GPUs, historical demand growth, and all six monthly GPU requirements.
+  owning organization, exact SKU,   current observed peak requests/second, current
+    allocated GPUs (highest recorded daily allocation before planning starts), historical demand growth, and all six monthly GPU requirements.
   Service names remain visible while scrolling across the monthly columns.
 - Select a service name to see its observed daily demand and forecast GPU trend.
   Historical growth compares the latest complete 28-day peak-demand window with
