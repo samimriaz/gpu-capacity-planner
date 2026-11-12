@@ -66,8 +66,14 @@ keep their existing filters; organization and model drill-down remains available
 
 **How this capacity forecast is calculated** follows the month picker, then
 the scenario controls. The planner separates **Inference** and **Training**, with
-inference GPU need, training GPU need, total demand and combined supply shortage
-at the top. The extra planning toolbar is removed: summaries and budget edits
+three summary cards: **Current allocated GPUs**, **Forecast GPU need**, and
+**Gap** (forecast minus current allocated GPUs, not the budget gap). Current
+allocations and forecast need include both segments unless training is excluded.
+Incomplete allocations show a labeled known subtotal; the summary gap remains
+unavailable until both allocations and forecast are complete. This net physical
+GPU comparison does not imply transfers or SKU substitutability; the detailed
+segment/SKU tables retain their separate budget-based gaps.
+The extra planning toolbar is removed: summaries and budget edits
 use the forecast start month, charts use physical GPUs, and the full six-month
 forecast remains visible. Training inclusion and global adjustments are still
 available on **Capacity forecast**; saved settings are not reset. Organization
