@@ -537,7 +537,7 @@
       const details = document.createElement("details");
       for (const attr of section.attributes) details.setAttribute(attr.name, attr.value);
       details.classList.add("collapsible-panel");
-      details.open = planningSectionState.get(key) ?? true;
+      details.open = planningSectionState.get(key) ?? false;
       const summary = document.createElement("summary");
       summary.className = heading.className;
       summary.append(...heading.childNodes);
@@ -546,6 +546,7 @@
       details.addEventListener("toggle", () => planningSectionState.set(key, details.open));
       section.replaceWith(details);
     }
+    for (const details of root.querySelectorAll("details")) details.classList.add("collapsible-panel");
   }
   function render() {
     $("#page-title").textContent = titles[view][0];

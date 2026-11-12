@@ -74,8 +74,8 @@ unavailable until both allocations and forecast are complete. This net physical
 GPU comparison does not imply transfers or SKU substitutability. The detailed
 segment/SKU tables use the same formula: forecasted GPUs minus current GPUs.
 Manual budget edits change neither the forecast nor the gap.
-Each titled forecast section has an arrow in its heading to collapse or expand
-its content independently. Sections start expanded, and their open/closed state
+Each titled forecast section has an arrow on the right of its heading to collapse
+or expand its content independently. Sections start collapsed, and their open/closed state
 is retained while editing growth or re-rendering the current page. Heading
 toggles also support keyboard interaction.
 The extra planning toolbar is removed: summaries and budget edits
