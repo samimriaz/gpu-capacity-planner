@@ -150,6 +150,7 @@
     number(t.bytesPerParameter, "Training-state bytes per parameter", 1, 100);
     number(t.block, "Topology block size", 1, 65536, true);
     number(t.runs, "Concurrent runs", 1, 1000, true);
+    if (t.scenarioGrowthPct !== undefined) number(t.scenarioGrowthPct, "Extra concurrent training runs by month six %", -90, 300);
   }
   function validate(state) {
     state = upgrade(state);
@@ -187,6 +188,7 @@
       number(s.installed, "Installed GPUs", 0, 1e7, true);
       number(s.unavailable, "Unavailable GPUs", 0, s.installed, true);
       number(s.reserve, "Protected reserve GPUs", 0, s.installed - s.unavailable, true);
+      if (s.inferenceBudgetPct !== undefined) number(s.inferenceBudgetPct, "Inference capacity budget %", 0, 100);
     }
     if (state.supply.additions.length > 1000) fail("Too many capacity additions.");
     state.supply.additions.forEach(a => { pool(a.pool); month(a.month); number(a.gpus, "Commissioned addition", 1, 1e7, true); });
@@ -425,7 +427,7 @@
         const inferenceGpus = estimates.filter(e => e.available).reduce((n, e) => n + e.gpus, 0);
         const baselineInference = estimates.filter(e => e.available).reduce((n, e) => n + e.baselineGpus, 0);
         const trainingCounts = options.includeTraining ? state.training.filter(t => t.month === m && t.pool === p &&
-          owners.some(s => s.id === t.serviceId)).map(t => training(t).totalGpus) : [];
+          owners.some(s => s.id === t.serviceId)).map(t => training(t, state.startMonth).totalGpus) : [];
         const missing = entries.filter(e => !e.available).length + estimates.filter(e => !e.available).length +
           trainingCounts.filter(n => !Number.isSafeInteger(n)).length;
         const trainingGpus = trainingCounts.filter(Number.isSafeInteger).reduce((n, count) => n + count, 0);
@@ -433,8 +435,15 @@
         const usable = supply.installed - supply.unavailable - supply.reserve +
           state.supply.additions.filter(a => a.pool === p && a.month <= m).reduce((n, a) => n + a.gpus, 0);
         const required = inferenceGpus + trainingGpus;
+        const inferenceComplete = entries.every(e => e.available) && estimates.every(e => e.available);
+        const trainingComplete = trainingCounts.every(Number.isSafeInteger);
+        const inferenceBudget = supply.inferenceBudgetPct === undefined ? null : Math.floor(usable * supply.inferenceBudgetPct / 100);
+        const trainingBudget = inferenceBudget === null ? null : usable - inferenceBudget;
         return {month: m, pool: p, baselineInference, inference: inferenceGpus, training: trainingGpus, required,
-          usable, gap: required - usable, missing, complete: missing === 0, estimates};
+          usable, gap: required - usable, missing, complete: missing === 0, estimates,
+          inferenceComplete, trainingComplete, inferenceBudget, trainingBudget,
+          inferenceGap: inferenceComplete && inferenceBudget !== null ? inferenceGpus - inferenceBudget : null,
+          trainingGap: trainingComplete && trainingBudget !== null ? trainingGpus - trainingBudget : null};
       });
       return {month: m, pools, baselineRequired: pools.reduce((n, p) => n + p.baselineInference, 0),
         required: pools.reduce((n, p) => n + p.required, 0), usable: pools.reduce((n, p) => n + p.usable, 0),
@@ -548,7 +557,7 @@
           const owner = state.services.find(s => s.id === plan.serviceId);
           if (plan.month === m.month && (selectedId === "all" || owner.id === selectedId) &&
               (selectedTeam === "all" || owner.team === selectedTeam) && (selectedPool === "all" || plan.pool === selectedPool)) {
-            rows.push({kind: "training", item: plan, serviceId: owner.id, gpus: training(plan).totalGpus, reason: ""});
+            rows.push({kind: "training", item: plan, serviceId: owner.id, gpus: training(plan, state.startMonth).totalGpus, reason: ""});
           }
         }
       }
@@ -605,16 +614,21 @@
     const next = {...state, training: state.training.map(t => t.id === id ? {...t, month: targetMonth} : t)};
     return validate(next);
   }
-  function training(plan) {
+  function training(plan, startMonth) {
+    if (startMonth !== undefined) month(startMonth);
+    const elapsed = startMonth === undefined ? 0 : Math.max(0, Math.min(6,
+      (+plan.month.slice(0, 4) - +startMonth.slice(0, 4)) * 12 + +plan.month.slice(5, 7) - +startMonth.slice(5, 7) + 1));
+    const growthFactor = (1 + (plan.scenarioGrowthPct ?? 0) / 100) ** (elapsed / 6);
+    const plannedRuns = Math.ceil(plan.runs * growthFactor);
     const flops = 6 * plan.parametersB * 1e9 * plan.tokensB * 1e9;
     const effectiveFlops = plan.peakTflops * 1e12 * plan.mfu / 100;
     const computeGpus = Math.ceil(flops / (plan.days * 86400 * effectiveFlops));
     const memoryGpus = Math.ceil(plan.parametersB * 1e9 * plan.bytesPerParameter / (plan.memoryGB * 1e9));
     const gang = Math.ceil(Math.max(computeGpus, memoryGpus) / plan.block) * plan.block;
     return {
-      flops, computeGpus, memoryGpus, gang, totalGpus: gang * plan.runs,
+      flops, computeGpus, memoryGpus, gang, plannedRuns, baseRuns: plan.runs, growthFactor, totalGpus: gang * plannedRuns,
       activeRuntimeDays: flops / (gang * effectiveFlops) / 86400,
-      reservedGpuHours: gang * plan.runs * plan.days * 24,
+      reservedGpuHours: gang * plannedRuns * plan.days * 24,
       warning: "Dense pretraining only. Memory screen excludes activations/buffers; MFU and topology feasibility need calibration.",
     };
   }
@@ -629,7 +643,7 @@
         const trainingGpus = state.training.filter(t => t.pool === p && t.month === m &&
           (selectedId === "all" || t.serviceId === selectedId) &&
           (selectedTeam === "all" || state.services.find(s => s.id === t.serviceId).team === selectedTeam)
-        ).reduce((n, t) => n + training(t).totalGpus, 0);
+        ).reduce((n, t) => n + training(t, state.startMonth).totalGpus, 0);
         const supply = state.supply[p];
         const additions = state.supply.additions.filter(a => a.pool === p && a.month <= m).reduce((n, a) => n + a.gpus, 0);
         const usable = supply.installed - supply.unavailable - supply.reserve + additions;

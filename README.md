@@ -57,22 +57,24 @@ The interface uses a white background, dark text, and subdued chart colors.
 
 The first page starts with **How this capacity forecast is calculated**, followed
 by the Service, Organization, GPU SKU, and planning-start filters, then the
-scenario controls. The explanation focuses on sizing each service, then adding
-GPU needs by SKU and month rather than adding growth percentages. A small,
-fixed two-service example shows Chat growing from 20 to 30 requests/second
-and Image tagging from 8 to 12. With usable rates of 8 and 4 requests/second
-per GPU after 20% headroom, they need 4 and 3 H100 GPUs. If usable company
-supply is the 6 GPUs already assigned, the shortage is 1 GPU. The example uses
-invented throughput, assumes one GPU per model copy and overlapping peaks,
-and does not change workspace inputs or forecasting calculations.
+scenario controls. The planner separates **Inference** and **Training**, with
+inference GPU need, training GPU need, total demand and combined supply shortage
+at the top. The small explanation example uses 3 inference GPUs and 6 training
+GPUs: 9 total, against separate budgets of 2 and 4, leaving gaps of 1 and 2.
+These are teaching numbers, not benchmark measurements.
+
+The inference section forecasts service traffic and GPU requirements. The
+training section has its own forecast, editable run-growth percentages and
+schedule. Combined history, prior-year comparison and normalization remain
+available under **Combined trend, historical comparison and normalization**.
 
 Open **Show detailed formulas and forecasting assumptions** for the inference
 and training methods. Actual workspace calculations, including large service
 numbers, are in a separate nested **Inspect actual workspace numbers** section;
 they update with the selected service, month, growth, and filters. Current
 traffic alone does not establish sustainable serving capacity. The current
-engine still represents one serving configuration per service; the explanation
-does not add fleet telemetry ingestion or multi-model service support.
+engine still represents one serving configuration per service; this does not
+add fleet telemetry ingestion or multi-model service support.
 
 - **Inference uses requests per second (RPS).** Demand is the incoming peak
   request rate. Throughput is the RPS one GPU replica can serve for that model
@@ -97,6 +99,28 @@ does not add fleet telemetry ingestion or multi-model service support.
   The increase compounds across six months, so month one gets a smaller
   increase. It is not a flat increase in every month or a replacement for the
   learned trend.
+- **Training growth** means extra concurrent runs by month six. For a plan
+  scheduled in forecast month `i` (1–6), runs are
+  `ceil(baseRuns * (1 + growthPct / 100) ** (i / 6))`. Model size, tokens,
+  active days, MFU and GPUs per run stay fixed. Only the scheduled month
+  contributes; no recurring jobs are invented in empty months. Growth for
+  plans outside the horizon is capped at the horizon endpoints and those
+  plans remain excluded from horizon totals. Missing growth defaults to zero,
+  preserving existing workspaces. Rescheduling recomputes the growth factor.
+- **Set capacity budgets** assigns an inference percentage per GPU SKU;
+  training gets the remainder. Each month applies that split to usable supply,
+  including commissioned additions. Inference rounds down to whole GPUs and
+  training gets the remainder, so budgets sum exactly to usable supply.
+  Existing workspaces have no assigned split: segment gaps stay unavailable
+  until budgets are entered, while the combined fleet gap remains visible.
+  Budgets stay company-wide when demand is filtered by organization or service.
+  Positive segment gaps require extra capacity or an explicit budget transfer;
+  no automatic borrowing occurs. Combined gaps net spare capacity between
+  segments within each SKU. The shortage KPI sums positive SKU gaps without
+  offsetting them against spare capacity on other SKUs.
+- JSON forecasts and requirements CSVs include inference/training budgets,
+  gaps and completeness flags. Workspace JSON preserves budget percentages
+  and training run-growth assumptions.
 - Drag a training card to another month. A month selector provides the same
   action without dragging. Active run days stay unchanged; a 31-day run cannot
   move into February.
