@@ -190,6 +190,51 @@ test("zero traffic is a valid forecast, with WAPE unavailable", () => {
   assert.equal(M.capacityForecast(state).monthly[0].required, 0);
 });
 
+test("P90 sizing widens the P50 base by the holdout spread scaled by the square root of months ahead", () => {
+  const state = fixture(i => 1000 + (i % 5) * 60);
+  const forecast = M.trafficForecast(state, state.services[0].id);
+  assert.ok(forecast.band.relativeSd > 0);
+  const ratios = M.capacityForecast(state).monthly.map(m => {
+    const e = m.pools.flatMap(p => p.estimates)[0];
+    return {p50: e.peakRps, p90: e.peakRpsP90};
+  }).map(({p50, p90}) => p90 / p50 - 1);
+  const first = ratios[0];
+  ratios.forEach((r, i) => assert.ok(Math.abs(r - first * Math.sqrt(i + 1)) < 1e-9));
+  assert.ok(ratios.every(r => r >= 0));
+});
+
+test("flat history has zero spread, so P90 equals P50 for GPUs and budget defaults", () => {
+  const state = fixture(() => 100);
+  const forecast = M.capacityForecast(state);
+  assert.equal(forecast.monthly[0].pools.flatMap(p => p.estimates)[0].bandAvailable, true);
+  for (const m of forecast.monthly) {
+    for (const p of m.pools) {
+      assert.equal(p.inferenceP50, p.inference);
+      assert.equal(p.requiredP50, p.required);
+    }
+  }
+});
+
+test("zero traffic has no spread band, so the P90 need falls back to P50", () => {
+  const state = fixture(() => 0);
+  assert.equal(M.trafficForecast(state, state.services[0].id).band, null);
+  const first = M.capacityForecast(state).monthly[0].pools.flatMap(p => p.estimates)[0];
+  assert.equal(first.bandAvailable, false);
+  assert.equal(first.gpusP50, first.gpus);
+});
+
+test("noisy history makes the default budget the P90 need, never below the P50 need", () => {
+  const state = fixture(i => 1000 + (i % 5) * 60);
+  for (const m of M.capacityForecast(state).monthly) {
+    for (const p of m.pools) {
+      assert.ok(p.inferenceP50 <= p.inference);
+      assert.equal(p.inferenceBudget, p.inference);
+      assert.ok(p.requiredP50 <= p.required);
+    }
+  }
+});
+
+
 test("model selection predicts all 14 later days without reading their observations", () => {
   const state = fixture();
   const original = M.trafficForecast(state, state.services[0].id);
@@ -296,6 +341,22 @@ test("missing history and incompatible profiles make totals partial, never healt
   const mismatched = M.capacityForecast(valid);
   assert.equal(mismatched.monthly[0].complete, false);
   assert.match(mismatched.services[0].reason, /configuration/);
+});
+
+test("driver plans grow only with scenario growth in the capacity forecast, not annual growth too", () => {
+  const withAnnual = fixture();
+  withAnnual.records = [];
+  withAnnual.services[0].demandMethod = "drivers";
+  withAnnual.services[0].annualGrowth = 50;
+  const withoutAnnual = structuredClone(withAnnual);
+  withoutAnnual.services[0].annualGrowth = 0;
+  const a = M.capacityForecast(withAnnual).monthly[5].pools.flatMap(p => p.estimates)[0];
+  const b = M.capacityForecast(withoutAnnual).monthly[5].pools.flatMap(p => p.estimates)[0];
+  assert.equal(a.baseRps, b.baseRps);
+  assert.equal(a.peakRps, b.peakRps);
+  withAnnual.services[0].scenarioGrowthPct = 20;
+  const scenario = M.capacityForecast(withAnnual).monthly[5].pools.flatMap(p => p.estimates)[0];
+  assert.ok(Math.abs(scenario.peakRps / a.peakRps - 1.2) < 1e-9);
 });
 
 test("new services can explicitly use driver plans without pretending they have history", () => {

@@ -309,17 +309,18 @@
         previousPeakRps === 0 ? "The previous 28-day peak is zero; percentage growth is unavailable." : "",
       observations};
   }
+  function driverRps(d, m, annualGrowthPct) {
+    return d.activeUsers * (1 + annualGrowthPct / 100) ** (m / 12) *
+      d.sessionsPerUser * d.requestsPerSession * d.callsPerRequest *
+      (1 - d.cacheHitPct / 100) / 86400 * d.peakToAverage;
+  }
   function inference(state, service, index) {
     const base = baseline(state, service.id);
     if (service.demandMethod === "historical" && !base) return {available: false, reason: "No consumption baseline; enter daily data.", gpus: null, peakRps: null};
     const m = index + 1;
     let organicRps;
-    if (service.demandMethod === "drivers") {
-      const d = service.drivers;
-      organicRps = d.activeUsers * (1 + service.annualGrowth / 100) ** (m / 12) *
-        d.sessionsPerUser * d.requestsPerSession * d.callsPerRequest *
-        (1 - d.cacheHitPct / 100) / 86400 * d.peakToAverage;
-    } else organicRps = base.peakRps * (1 + service.annualGrowth / 100) ** (m / 12);
+    if (service.demandMethod === "drivers") organicRps = driverRps(service.drivers, m, service.annualGrowth);
+    else organicRps = base.peakRps * (1 + service.annualGrowth / 100) ** (m / 12);
     const launchRps = service.monthlyLaunchRps * m;
     const peakRps = organicRps + launchRps;
     const performance = profileFor(state, service);
@@ -409,6 +410,22 @@
     return Math.max(0, fit.level + fit.slope * ((Date.parse(target) - Date.parse(fit.end)) / DAY) +
       fit.weekday[new Date(target).getUTCDay()]);
   }
+  // Standard-normal 90th percentile; P90 widens P50 by this many SDs of relative error.
+  const P90_Z = 1.2815515655446004;
+  // Holdout one-day residual SD relative to mean traffic; null when mean traffic is zero.
+  function residualSpread(predictions) {
+    const n = predictions.length;
+    const errors = predictions.map(p => p.actual - p.predicted);
+    const meanError = errors.reduce((sum, e) => sum + e, 0) / n;
+    const meanActual = predictions.reduce((sum, p) => sum + p.actual, 0) / n;
+    if (!(meanActual > 0) || n < 2) return null;
+    return Math.sqrt(errors.reduce((sum, e) => sum + (e - meanError) ** 2, 0) / (n - 1)) / meanActual;
+  }
+  // P90 level multiplier for a planning month. Uncertainty grows with the square root of months ahead; this is a heuristic.
+  function p90Multiplier(history, index) {
+    if (!history?.band) return 1;
+    return 1 + history.band.z * history.band.relativeSd * Math.sqrt(index + 1);
+  }
   function trafficForecast(state, serviceId) {
     const eligible = state.records.filter(r => r.serviceId === serviceId && r.date < `${state.startMonth}-01`)
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -442,7 +459,10 @@
       }
       return {month: m, peakRps: Math.max(...daily.map(p => p.peakRps)), daily};
     });
+    const relativeSd = residualSpread(best.predictions);
     return {available: true, source: "history", method: best.method, fit, scores, monthly,
+      band: relativeSd === null ? null : {relativeSd, z: P90_Z, holdoutDays: best.predictions.length,
+        basis: "Holdout one-day residual SD / mean traffic; P90 = P50 × (1 + z × SD × √months ahead)."},
       observedDays: rows.length, firstDate: rows[0].date, lastDate,
       gapDays: Math.round((Date.parse(`${state.startMonth}-01`) - Date.parse(lastDate)) / DAY) - 1,
       selectionDays: 14, selectedWape: best.wape};
@@ -457,7 +477,7 @@
     const evidence = services.map(service => {
       const history = trafficForecast(state, service.id);
       const demand = service.demandMethod === "drivers" ? {available: true, source: "drivers", method: "drivers",
-        monthly: months(state.startMonth).map((m, i) => ({month: m, peakRps: inference(state, service, i).organicRps}))} : history;
+        monthly: months(state.startMonth).map((m, i) => ({month: m, peakRps: driverRps(service.drivers, i + 1, 0)}))} : history;
       const performance = profileFor(state, service);
       return {service, history, demand, performance, available: demand.available && performance.available,
         reason: !demand.available ? demand.reason : !performance.available ? performance.reason : ""};
@@ -467,18 +487,24 @@
         const entries = evidence.filter(e => e.service.pool === p);
         const estimates = entries.filter(e => e.available).map(e => {
           const baseRps = e.demand.monthly[index].peakRps;
+          const baseRpsP90 = baseRps * p90Multiplier(e.history, index);
           const launchRps = options.includeLaunches ? e.service.monthlyLaunchRps * (index + 1) : 0;
           const growthFactor = (1 + (e.service.scenarioGrowthPct ?? 0) / 100) ** ((index + 1) / 6);
-          const peakRps = baseRps * growthFactor * (1 + options.trafficAdjustmentPct / 100) + launchRps;
+          const adjustment = 1 + options.trafficAdjustmentPct / 100;
+          const peakRps = baseRps * growthFactor * adjustment + launchRps;
+          const peakRpsP90 = baseRpsP90 * growthFactor * adjustment + launchRps;
           const usableShare = 1 - e.service.headroom / 100;
+          const replicaRps = e.performance.rpsPerReplica * (1 + options.throughputChangePct / 100);
           const baselineGpus = Math.ceil(baseRps / usableShare / e.performance.rpsPerReplica) * e.performance.gpusPerReplica;
-          const gpus = Math.ceil(peakRps / usableShare / (e.performance.rpsPerReplica *
-            (1 + options.throughputChangePct / 100))) * e.performance.gpusPerReplica;
-          const available = Number.isSafeInteger(baselineGpus) && Number.isSafeInteger(gpus);
-          return {serviceId: e.service.id, baseRps, launchRps, growthFactor, peakRps, baselineGpus, gpus, available,
+          const gpusP50 = Math.ceil(peakRps / usableShare / replicaRps) * e.performance.gpusPerReplica;
+          const gpus = Math.ceil(peakRpsP90 / usableShare / replicaRps) * e.performance.gpusPerReplica;
+          const available = Number.isSafeInteger(baselineGpus) && Number.isSafeInteger(gpusP50) && Number.isSafeInteger(gpus);
+          return {serviceId: e.service.id, baseRps, launchRps, growthFactor, peakRps, peakRpsP90, baselineGpus,
+            gpusP50, gpus, bandAvailable: Boolean(e.history?.band), available,
             reason: available ? "" : "GPU estimate exceeds the supported count range. Check traffic and serving throughput."};
         });
         const inferenceGpus = estimates.filter(e => e.available).reduce((n, e) => n + e.gpus, 0);
+        const inferenceGpusP50 = estimates.filter(e => e.available).reduce((n, e) => n + e.gpusP50, 0);
         const baselineInference = estimates.filter(e => e.available).reduce((n, e) => n + e.baselineGpus, 0);
         const trainingCounts = options.includeTraining ? state.training.filter(t => t.month === m && t.pool === p &&
           owners.some(s => s.id === t.serviceId)).map(t => training(t, state.startMonth).totalGpus) : [];
@@ -489,6 +515,7 @@
         const usable = supply.installed - supply.unavailable - supply.reserve +
           state.supply.additions.filter(a => a.pool === p && a.month <= m).reduce((n, a) => n + a.gpus, 0);
         const required = inferenceGpus + trainingGpus;
+        const requiredP50 = inferenceGpusP50 + trainingGpus;
         const inferenceComplete = entries.every(e => e.available) && estimates.every(e => e.available);
         const trainingComplete = trainingCounts.every(Number.isSafeInteger);
         const have = segmentCapacity(state, p, selectedId, selectedTeam);
@@ -497,8 +524,9 @@
         const inferenceBudget = override?.inference ?? (inferenceComplete ? inferenceGpus : null);
         const trainingBudget = !options.includeTraining ? 0 : override?.training ?? (trainingComplete ? trainingGpus : null);
         const budgetRequired = inferenceBudget === null || trainingBudget === null ? null : inferenceBudget + trainingBudget;
-        return {month: m, pool: p, baselineInference, inference: inferenceGpus, training: trainingGpus, required,
-          usable, gap: required - usable, missing, complete: missing === 0, estimates,
+        return {month: m, pool: p, baselineInference, inference: inferenceGpus, inferenceP50: inferenceGpusP50,
+          training: trainingGpus, required, requiredP50, usable, gap: required - usable, gapP50: requiredP50 - usable,
+          missing, complete: missing === 0, estimates,
           inferenceComplete, trainingComplete, inferenceBudget, trainingBudget,
           inferenceHave: have.inference, trainingHave: have.training,
           inferenceHaveSource: have.inferenceSource, trainingHaveSource: have.trainingSource,
@@ -614,14 +642,17 @@
       const rows = forecast.services.map(e => {
         const estimate = m.pools.flatMap(p => p.estimates).find(r => r.serviceId === e.service.id);
         return {kind: "inference", item: e.service, serviceId: e.service.id,
-          gpus: e.available && estimate?.available ? estimate.gpus : null, reason: e.reason || estimate?.reason || ""};
+          gpus: e.available && estimate?.available ? estimate.gpus : null,
+          gpusP50: e.available && estimate?.available ? estimate.gpusP50 : null,
+          reason: e.reason || estimate?.reason || ""};
       });
       if (forecast.options.includeTraining) {
         for (const plan of state.training) {
           const owner = state.services.find(s => s.id === plan.serviceId);
           if (plan.month === m.month && (selectedId === "all" || owner.id === selectedId) &&
               (selectedTeam === "all" || owner.team === selectedTeam) && (selectedPool === "all" || plan.pool === selectedPool)) {
-            rows.push({kind: "training", item: plan, serviceId: owner.id, gpus: training(plan, state.startMonth).totalGpus, reason: ""});
+            const totalGpus = training(plan, state.startMonth).totalGpus;
+            rows.push({kind: "training", item: plan, serviceId: owner.id, gpus: totalGpus, gpusP50: totalGpus, reason: ""});
           }
         }
       }
@@ -633,6 +664,7 @@
         const normalizedGpus = equivalent !== null && Number.isFinite(equivalent) && equivalent <= Number.MAX_SAFE_INTEGER ? equivalent : null;
         return {kind: r.kind, id: r.item.id, name: r.item.name, serviceId: r.serviceId,
           team: state.services.find(s => s.id === r.serviceId).team, pool: r.item.pool, gpus: physicalComplete ? r.gpus : null,
+          gpusP50: physicalComplete ? r.gpusP50 : null,
           normalizedGpus, calibration, reason: !physicalComplete ? r.reason || "GPU count is outside the supported range." :
             normalizedGpus === null ? calibration.reason || "Normalized count is outside the supported range." : ""};
       });
@@ -642,7 +674,8 @@
         const physicalComplete = items.every(r => r.gpus !== null);
         return {inference: items.filter(r => r.kind === "inference").reduce((n, r) => n + (r.gpus ?? 0), 0),
           training: items.filter(r => r.kind === "training").reduce((n, r) => n + (r.gpus ?? 0), 0),
-          required: items.reduce((n, r) => n + (r.gpus ?? 0), 0), physicalComplete,
+          required: items.reduce((n, r) => n + (r.gpus ?? 0), 0),
+          requiredP50: items.reduce((n, r) => n + (r.gpusP50 ?? 0), 0), physicalComplete,
           normalizedRequired: !missing && Number.isFinite(knownNormalized) && knownNormalized <= Number.MAX_SAFE_INTEGER ? knownNormalized : null,
           knownNormalized, missing, normalizationMissing: missing, count: items.length,
           normalizationReason: missing ? "Some workloads lack usable benchmark pairs or sizing inputs." :

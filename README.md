@@ -519,10 +519,16 @@ The portal first estimates traffic, then converts that traffic into GPUs.
    peaks through the next six planning months, including any gap between the
    latest observation and the start of the plan.
 5. Use the busiest predicted day in each month to size serving capacity.
+6. Build a traffic band from the 14-day errors. The band widens with the square
+   root of months ahead. Sizing uses the high-demand (P90) case; the median (P50)
+   case is shown alongside. The spread is heuristic: 14 held-out days do not
+   calibrate six-month uncertainty. Services without a usable band (no history,
+   or zero traffic) show P90 = P50.
 
-The method, days of history, last observation, and selection error appear under
-**What is driving the forecast?** The 14-day error helps choose a method; it does
-not measure accuracy six months ahead.
+The method, days of history, last observation, selection error, and band
+appear under **What is driving the forecast?** The 14-day error helps choose a
+method; it does not measure accuracy six months ahead. Budgets default to the
+P90 need.
 
 **Then apply your adjustments:**
 
@@ -543,7 +549,9 @@ each service's existing spare-capacity allowance.
 **For a new service without history:** select a user-based plan in **Service
 plans**. Multiply daily users by sessions, requests, and model calls; subtract
 calls avoided entirely by cache; convert to requests per second and apply the
-peak-traffic factor. Annual growth applies to users in this mode.
+peak-traffic factor. In the capacity forecast, a driver plan grows only with its
+extra demand by month six; the annual user growth input drives the Service plans
+calculator and its manual scenario, not the learned forecast.
 This is labeled as an entered plan, not a learned traffic trend.
 
 The **Service plans** page retains the earlier manual annual-growth calculator
