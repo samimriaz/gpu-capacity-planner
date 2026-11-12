@@ -388,8 +388,10 @@
       horizon: "One-day-ahead daily peak RPS; not a six-month capacity forecast.",
       predictions: best.predictions.filter(p => p.split === "held_out")};
   }
+  // 52 whole weeks: the trend is fitted on complete weekly averages, so the window must be a multiple of 7.
+  const TRAFFIC_WINDOW_DAYS = 364;
   function fitTraffic(rows, method) {
-    const count = Math.floor(Math.min(rows.length, method === "recent_average" ? 28 : 84) / 7) * 7;
+    const count = Math.floor(Math.min(rows.length, method === "recent_average" ? 28 : TRAFFIC_WINDOW_DAYS) / 7) * 7;
     const sample = rows.slice(-count);
     const weeks = Array.from({length: count / 7}, (_, i) => ({
       x: i * 7 + 3, y: sample.slice(i * 7, i * 7 + 7).reduce((n, r) => n + r.peakRps, 0) / 7
@@ -433,7 +435,7 @@
     const history = new Map(eligible.map(r => [r.date, r]));
     const lastDate = eligible.at(-1).date;
     const rows = [];
-    for (let offset = 0; offset < 84; offset++) {
+    for (let offset = 0; offset < TRAFFIC_WINDOW_DAYS; offset++) {
       const key = new Date(Date.parse(lastDate) - offset * DAY).toISOString().slice(0, 10);
       if (!history.has(key)) break;
       rows.unshift(history.get(key));

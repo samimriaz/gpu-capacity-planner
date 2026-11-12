@@ -508,8 +508,8 @@ The portal first estimates traffic, then converts that traffic into GPUs.
 
 **For an existing service, learn from its history:**
 
-1. Take up to 84 consecutive daily records before planning starts. At least
-   42 are needed; missing days are not filled with zero.
+1. Take up to 364 consecutive daily records (52 weeks) before planning starts.
+   At least 42 are needed; missing days are not filled with zero.
 2. Try two methods: a recent average and a straight-line trend fitted to weekly
    averages. Both also learn which weekdays tend to be busier.
 3. Keep the final 14 days aside. Predict those days using only the earlier data

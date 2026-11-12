@@ -276,11 +276,11 @@ test("minimum coverage is exactly 42 consecutive days and gaps stay missing", ()
   assert.match(forecast.reason, /missing days/);
 });
 
-test("only the latest 84 days train the model, with no mutation of the workspace", () => {
-  const state = fixture(undefined, 90);
-  state.startMonth = "2027-01";
+test("only the latest 364 days (52 whole weeks) train the model, with no mutation of the workspace", () => {
+  const state = fixture(undefined, 400);
+  state.startMonth = "2027-11";
   const snapshot = JSON.stringify(state);
-  assert.equal(M.trafficForecast(state, "assistant").observedDays, 84);
+  assert.equal(M.trafficForecast(state, "assistant").observedDays, 364);
   M.capacityForecast(state);
   assert.equal(JSON.stringify(state), snapshot);
 });
