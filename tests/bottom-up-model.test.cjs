@@ -52,15 +52,16 @@ test("training growth compounds to schedule, rounds runs and does not create rec
   assert.equal(M.training(plan, state.startMonth).gang, base.gang);
 });
 
-test("budgets default to forecast need while unentered Have leaves gaps unknown", () => {
+test("budgets follow forecast need and inference Have uses existing allocation records", () => {
   const state = M.demo(), pool = M.bottomUpForecast(state).monthly[0].pools[0];
   assert.equal(pool.inferenceBudget, pool.inference);
   assert.equal(pool.trainingBudget, pool.training);
   assert.equal(pool.inferenceBudgetSource, "forecast");
   assert.equal(pool.trainingBudgetSource, "forecast");
-  assert.equal(pool.inferenceHave, null);
+  assert.ok(pool.inferenceHave > 0);
+  assert.equal(pool.inferenceHaveSource, "recorded-allocation");
   assert.equal(pool.trainingHave, null);
-  assert.equal(pool.inferenceGap, null);
+  assert.equal(pool.inferenceGap, pool.inferenceBudget - pool.inferenceHave);
   assert.equal(pool.trainingGap, null);
   assert.equal(pool.gap, pool.required - pool.usable);
 });
@@ -83,7 +84,7 @@ test("legacy percentage splits preserve starting available capacity, not forecas
   assert.equal(JSON.stringify(state), before);
   const scoped = M.bottomUpForecast(state, state.services[0].id).monthly[0].pools.find(p => p.pool === sku);
   assert.equal(scoped.inferenceBudget, scoped.inference);
-  assert.equal(scoped.inferenceHave, pool.inferenceHave);
+  assert.equal(scoped.inferenceHave, Math.max(...state.records.filter(r => r.serviceId === state.services[0].id).map(r => Math.ceil(r.gpuHours / 24))));
 });
 
 test("legacy zero and full splits preserve available capacity correctly", () => {
@@ -236,6 +237,64 @@ test("training exclusion preserves a zero manual target and restores it when re-
   assert.equal(get().trainingBudgetSource, "manual");
   assert.equal(get().trainingBudget, 0);
   assert.ok(get().training > 0);
+});
+
+test("retained inference allocations use each service's high-water mark, not current activity or a monthly average", () => {
+  const state = M.demo(), service = state.services[0];
+  replaceHistory(state, service.id, 10, 5);
+  const rows = state.records.filter(r => r.serviceId === service.id);
+  rows[0].gpuHours = 12 * 24;
+  rows.at(-1).gpuHours = 2 * 24;
+  rows.forEach(r => r.activity = 1);
+  const before = JSON.stringify(state);
+  const have = M.segmentCapacity(state, service.pool, service.id);
+  assert.equal(have.inference, 12);
+  assert.equal(have.inferenceSource, "recorded-allocation");
+  assert.equal(JSON.stringify(state), before);
+  service.scenarioGrowthPct = -90;
+  const report = M.bottomUpForecast(state, service.id);
+  assert.ok(report.monthly.every(m => m.pools.find(p => p.pool === service.pool).inferenceHave === 12));
+});
+
+test("allocation rollups follow service and organization ownership without borrowing other teams' GPUs", () => {
+  const state = M.demo(), service = state.services[0], sku = service.pool;
+  const ids = state.services.filter(s => s.pool === sku).map(s => s.id);
+  const expected = ids.reduce((n, id) => n + Math.max(...state.records.filter(r => r.serviceId === id).map(r => Math.ceil(r.gpuHours / 24))), 0);
+  assert.equal(M.segmentCapacity(state, sku).inference, expected);
+  const own = Math.max(...state.records.filter(r => r.serviceId === service.id).map(r => Math.ceil(r.gpuHours / 24)));
+  assert.equal(M.segmentCapacity(state, sku, service.id).inference, own);
+  assert.equal(M.segmentCapacity(state, sku, "all", service.team).inference, own);
+  state.supply[sku].inferenceAvailable = 100;
+  assert.equal(M.segmentCapacity(state, sku).inference, 100);
+  assert.equal(M.segmentCapacity(state, sku, service.id).inference, own);
+});
+
+test("future observations cannot inflate existing allocations and fractional daily counts round up", () => {
+  const state = M.demo(), service = state.services[0];
+  state.records = state.records.filter(r => r.serviceId !== service.id);
+  const row = {serviceId: service.id, date: "2026-11-09", peakRps: 1, gpuHours: 25, activity: 100, requests: 0, source: "user-entered"};
+  state.records.push(row, {...row, date: "2026-12-01", gpuHours: 24000});
+  assert.equal(M.segmentCapacity(state, service.pool, service.id).inference, 2);
+});
+
+test("missing allocation history is not fabricated as zero or inferred from future training plans", () => {
+  const state = M.demo(), service = state.services[0];
+  state.records = state.records.filter(r => r.serviceId !== service.id);
+  assert.equal(M.segmentCapacity(state, service.pool, service.id).inference, null);
+  assert.equal(M.segmentCapacity(state, service.pool).inference, null);
+  assert.ok(state.training.some(t => t.pool === service.pool));
+  assert.equal(M.segmentCapacity(state, service.pool).training, null);
+});
+
+test("observed allocation supply conflicts remain visible rather than capping or reclaiming allocations", () => {
+  const state = M.demo(), sku = state.services[0].pool;
+  const recorded = M.segmentCapacity(state, sku).inference;
+  state.supply[sku] = {installed: 1, unavailable: 0, reserve: 0};
+  assert.doesNotThrow(() => M.validate(state));
+  const p = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === sku);
+  assert.equal(p.inferenceHave, recorded);
+  assert.equal(p.allocationConflict, true);
+  assert.equal(p.inferenceGap, p.inferenceBudget - recorded);
 });
 
 test("service rows expose names, current observed demand and all monthly GPU estimates", () => {

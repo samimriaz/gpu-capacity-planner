@@ -198,7 +198,8 @@
     state.supply.additions.forEach(a => { pool(a.pool); month(a.month); number(a.gpus, "Commissioned addition", 1, 1e7, true); });
     for (const p of POOLS) {
       const capacity = segmentCapacity(state, p);
-      if ((capacity.inference ?? 0) + (capacity.training ?? 0) > capacity.usable) {
+      if ((capacity.inferenceSource === "recorded-allocation" ? 0 : capacity.inference ?? 0) +
+          (capacity.training ?? 0) > capacity.usable) {
         fail(`Inference and training available counts exceed usable supply for ${p} at planning start.`);
       }
     }
@@ -219,13 +220,27 @@
     }
     return state;
   }
-  function segmentCapacity(state, p) {
+  function segmentCapacity(state, p, selectedId = "all", selectedTeam = "all") {
     const supply = state.supply[p];
     const usable = supply.installed - supply.unavailable - supply.reserve +
       state.supply.additions.filter(a => a.pool === p && a.month <= state.startMonth).reduce((n, a) => n + a.gpus, 0);
     const legacyInference = supply.inferenceBudgetPct === undefined ? null : Math.floor(usable * supply.inferenceBudgetPct / 100);
-    return {usable, inference: supply.inferenceAvailable ?? legacyInference,
-      training: supply.trainingAvailable ?? (legacyInference === null ? null : usable - legacyInference)};
+    const services = state.services.filter(s => s.pool === p && (selectedId === "all" || s.id === selectedId) &&
+      (selectedTeam === "all" || s.team === selectedTeam));
+    const allocations = new Map(services.map(s => [s.id, null]));
+    for (const r of state.records) {
+      if (r.date >= `${state.startMonth}-01` || !allocations.has(r.serviceId)) continue;
+      allocations.set(r.serviceId, Math.max(allocations.get(r.serviceId) ?? 0, Math.ceil(r.gpuHours / 24)));
+    }
+    const recordedInference = [...allocations.values()].some(n => n === null) ? null :
+      [...allocations.values()].reduce((sum, n) => sum + n, 0);
+    const companyScope = selectedId === "all" && selectedTeam === "all";
+    const explicitInference = companyScope ? supply.inferenceAvailable ?? legacyInference : null;
+    const inference = explicitInference ?? recordedInference;
+    const training = companyScope ? supply.trainingAvailable ?? (legacyInference === null ? null : usable - legacyInference) : null;
+    return {usable, inference, training, recordedInference,
+      inferenceSource: explicitInference !== null ? "entered-allocation" : recordedInference !== null ? "recorded-allocation" : "missing",
+      trainingSource: training === null ? "missing" : "entered-allocation"};
   }
   function months(start, count = 6) {
     month(start);
@@ -470,7 +485,7 @@
         const required = inferenceGpus + trainingGpus;
         const inferenceComplete = entries.every(e => e.available) && estimates.every(e => e.available);
         const trainingComplete = trainingCounts.every(Number.isSafeInteger);
-        const have = segmentCapacity(state, p);
+        const have = segmentCapacity(state, p, selectedId, selectedTeam);
         const override = state.segmentBudgets?.find(b => b.pool === p && b.month === m &&
           b.serviceId === selectedId && b.team === selectedTeam);
         const inferenceBudget = override?.inference ?? (inferenceComplete ? inferenceGpus : null);
@@ -480,6 +495,8 @@
           usable, gap: required - usable, missing, complete: missing === 0, estimates,
           inferenceComplete, trainingComplete, inferenceBudget, trainingBudget,
           inferenceHave: have.inference, trainingHave: have.training,
+          inferenceHaveSource: have.inferenceSource, trainingHaveSource: have.trainingSource,
+          allocationConflict: (have.inference ?? 0) + (have.training ?? 0) > have.usable,
           inferenceBudgetSource: override?.inference !== undefined ? "manual" : "forecast",
           trainingBudgetSource: !options.includeTraining ? "excluded" : override?.training !== undefined ? "manual" : "forecast",
           inferenceGap: inferenceBudget !== null && have.inference !== null ? inferenceBudget - have.inference : null,

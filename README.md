@@ -115,24 +115,42 @@ add fleet telemetry ingestion or multi-model service support.
   zero is an explicit manual budget. **Reset budget to forecast** clears
   overrides for the selected month and scope. Manual budgets never change
   forecast need; budgets below need can leave demand unfunded.
-- **Enter available GPUs** records inference and training counts separately
-  by SKU. Have stays fixed across the horizon until edited. Counts may leave
-  supply unassigned, but their sum must not exceed usable company supply at
-  planning start. That supply includes additions ready by planning start.
-  Later additions increase total company supply but are not automatically
-  assigned to either segment. Blank Have means unknown, while zero is known
-  zero; unknown Have leaves the segment gap unavailable.
+- **Inference Have is populated from existing allocation records.** For each
+  selected service, take its highest daily allocated GPU-hours before planning
+  start, divide by 24 and round up to whole GPUs. Sum those retained allocations
+  by SKU and owning organization. This is a conservative no-reclamation policy:
+  lower traffic, GPU activity or subsequent daily allocations do not take GPUs
+  back from a team. Have stays fixed throughout the forecast, independently of
+  growth, budget edits and training inclusion. It is derived from daily allocation
+  records, not an exact live inventory snapshot. Current service ownership and
+  SKU apply; effective-dated service migrations are not modeled.
+- **Review allocation baseline** is optional: recorded inference allocations
+  are prefilled, not blank inputs to re-enter. Saved company counts are explicit
+  inventory corrections and take precedence over derived records at company
+  scope. Clearing the inference correction restores the recorded baseline.
+  Existing percentage splits remain saved company allocation baselines, not
+  forecast budgets. Under service/organization filters, inference Have uses
+  only that scope's recorded allocations, not the entire company count.
+- Training has **no separate recorded allocation history** in the existing
+  workspace. Future scheduled runs are requirements, not proof of GPUs already
+  assigned. Training Have remains explicitly unavailable until a real company
+  training allocation baseline is saved. Company training baselines are not
+  attributed to individual teams; scoped training Have remains unavailable.
+  Missing inference allocation history also remains unavailable, not zero.
+- Explicit company allocation counts must fit usable supply at planning start.
+  If recorded allocations exceed supply in a scenario, a conflict is shown
+  rather than silently capping or reclaiming recorded allocations. Future
+  additions increase company supply but are not assigned to a team automatically.
 - **Segment gap = Budget - Have.** Positive means capacity to add to that
-  segment; negative means spare against budget. Have is company-wide even
-  under service/organization filters, not a team quota. Budgets are scoped
-  to the filtered demand. The combined shortage KPI sums positive per-SKU
+  segment; negative means capacity retained by that team, not capacity released
+  for other teams to borrow. Budgets are scoped to the filtered demand.
+  The combined shortage KPI sums positive per-SKU
   `(inference budget + training budget - total usable supply)` values.
   It includes unassigned supply and future additions, so it can differ from
   segment gaps. Spare capacity on other SKUs never offsets a shortage.
-- Existing percentage splits are retained as starting available counts,
-  not forecast budgets. Saving explicit Have counts replaces the old split.
-  No new available counts are invented for workspaces without a split.
-- JSON forecasts and requirements CSVs include Have, budget, budget source
+- JSON forecasts and requirements CSVs include Have, allocation source
+  (`recorded-allocation`, `entered-allocation`, or `missing`), supply conflict
+  flags, budget, budget source
   (`forecast`, `manual`, or training `excluded`), segment gaps and completeness
   flags. `gap` remains the forecast need minus all usable supply; the separate
   `budgetGap` uses budget targets instead. Workspace JSON preserves optional
