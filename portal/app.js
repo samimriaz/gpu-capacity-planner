@@ -241,7 +241,7 @@
       const service = selected.service, performance = selected.performance;
       const throughput = performance.rpsPerReplica * (1 + report.options.throughputChangePct / 100);
       const capacityShare = 1 - service.headroom / 100;
-      serving = `<h3>One service: ${esc(service.name)} in ${focused.month}</h3>
+      serving = `<h3>Workspace calculation: ${esc(service.name)} in ${focused.month}</h3>
         <ol class="logic-calculation">
           <li>Start with ${fmt(estimate.baseRps, 2)} peak requests/second from ${selected.demand.source === "history" ? "the learned traffic forecast" : "the entered user-demand plan"}. Apply this service's growth and the global traffic change, then add launches:<br><code>${fmt(estimate.baseRps, 2)} x ${fmt(estimate.growthFactor, 6)} x ${fmt(1 + report.options.trafficAdjustmentPct / 100, 4)} + ${fmt(estimate.launchRps, 2)} = ${fmt(estimate.peakRps, 2)} peak requests/second.</code></li>
           <li>One replica uses ${performance.gpusPerReplica} ${esc(skuName(service.pool))} GPUs and handles ${fmt(performance.rpsPerReplica, 4)} requests/second at the required response time. The ${pct(report.options.throughputChangePct)} throughput adjustment makes that ${fmt(throughput, 4)} requests/second. Keep ${fmt(service.headroom, 2)}% spare capacity, leaving ${fmt(throughput * capacityShare, 4)} usable requests/second per replica.</li>
@@ -279,21 +279,31 @@
       <p>For a common growth index, multiply each workload's GPU count by its own selected-SKU/H100 throughput ratio, then add those H100 equivalents. Normalization compares the plan; it does not change the required SKU counts or normalize idle inventory.</p></div>`;
   }
   function forecastLogicPanel(workspace, report) {
-    return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Goal: know which GPU SKUs are needed, how many, and in which month the company will run short.</p></div></div>
-      <div class="logic-key"><h3>A small example: one chatbot</h3><p>Assume the model fits on one H100 GPU. These are simple example numbers, not your workspace forecast.</p></div>
+    return `<section class="panel forecast-logic" aria-labelledby="forecast-logic-title"><div class="panel-heading"><div><h2 id="forecast-logic-title">How this capacity forecast is calculated</h2><p>Start with each service's traffic and GPU capacity. Forecast its growth, calculate its GPU need, then add service needs to get company demand.</p></div></div>
       <ol class="logic-steps">
-        <li><h3>1. Forecast requests</h3><p>Today's peak is <strong>16 requests/second</strong>. Expect <strong>50% growth next month</strong>.<br><strong>16 x 1.5 = 24 requests/second</strong> next month.</p></li>
-        <li><h3>2. Find what one GPU can handle</h3><p>A benchmark shows one H100 serves <strong>10 requests/second</strong> at the required response time. Keep <strong>20% spare</strong> for traffic spikes.<br><strong>10 x 80% = 8 usable requests/second per GPU.</strong></p></li>
-        <li><h3>3. Calculate GPUs needed</h3><p>Today: <strong>16 / 8 = 2 H100 GPUs.</strong><br>Next month: <strong>24 / 8 = 3 H100 GPUs.</strong><br>If you already have 2 available, <strong>add 1 H100 next month.</strong></p></li>
+        <li><h3>1. Start with each service</h3><p>Know its current peak requests/second, assigned GPUs and GPU SKU. Use its measured sustainable serving capacity at the required response time, not a generic GPU rating.</p></li>
+        <li><h3>2. Apply service growth</h3><p>Forecast requests for the target month. Divide by that service's usable serving capacity and round up to get the GPUs it needs. Keep existing spare capacity in mind; 50% more traffic does not always need 50% more GPUs.</p></li>
+        <li><h3>3. Add GPU needs, not growth rates</h3><p>Add service GPU requirements by SKU and month. That total is <strong>GPU demand</strong>. Compare it with usable company supply to find the shortage. Add scheduled training separately.</p></li>
       </ol>
-      <p class="logic-key"><strong>Expected requests/second / usable requests/second per GPU = GPUs needed.</strong> Always round up: 3.2 GPUs means 4 GPUs.</p>
-      <p class="logic-key">Repeat for each service, then add requirements by GPU SKU and month. If one model copy needs several GPUs, first calculate how many copies you need, then multiply by GPUs per copy. Add scheduled training separately. The live calculation below uses your selected service, month and growth settings.</p>
-      <details id="forecast-logic-details" ${$("#forecast-logic-details")?.open ? "open" : ""}><summary>Show the formulas and live calculation for the selected service and month</summary>
+      <div class="logic-key" id="service-growth-example"><h3>A small example: two services next month</h3>
+        <p>Made-up numbers to explain the method, not measured H100 benchmarks or your workspace forecast. Both services use dedicated H100 SXM 80GB GPUs, with one GPU per model copy and unchanged models and request sizes.</p>
+        <p>Suppose Chat can sustain 10 requests/second per GPU and Image tagging can sustain 5. Keep 20% spare: their usable rates are <strong>8 and 4 requests/second per GPU</strong>. These are sustainable capacities, not simply the traffic currently being served.</p>
+        ${table(["Service", "GPUs assigned now", "Peak requests/sec now", "Growth by next month", "Peak requests/sec next month", "Usable requests/sec per GPU", "GPUs needed next month"], `
+          <tr><td>Chat</td><td>4</td><td>20</td><td>+50%</td><td>20 x 1.5 = 30</td><td>8</td><td>Round up (30 / 8) = <strong>4</strong></td></tr>
+          <tr><td>Image tagging</td><td>2</td><td>8</td><td>+50%</td><td>8 x 1.5 = 12</td><td>4</td><td>12 / 4 = <strong>3</strong></td></tr>`)}
+        <p><strong>Total demand next month = 4 + 3 = 7 H100 GPUs.</strong> If usable company supply is the 6 GPUs already assigned, the shortage is <strong>7 - 6 = 1 additional H100</strong>. Chat's existing 4 GPUs already cover its growth; Image tagging needs 1 more.</p>
+        <p>Both services grow traffic by 50%, but we do not add those percentages or multiply all 6 assigned GPUs by 1.5. We size each service first, then add its GPU need. This example assumes their peaks can overlap and no other workloads or spare GPUs are present.</p>
+      </div>
+      <p class="logic-key"><strong>For one-GPU model copies: future requests/second / usable requests/second per GPU = GPUs needed, rounded up.</strong> For copies needing several GPUs, divide by the measured throughput of the whole copy, round up copies, then multiply by GPUs per copy. Size different models or configurations separately before rolling up a service. Count shared serving pools only once.</p>
+      <p class="logic-key">Current throughput alone does not prove maximum capacity. If sustainable throughput is unknown, the result is an assumption-based scenario. Keep totals split by SKU; spare GPUs of a different SKU are not automatic substitutes.</p>
+      <details id="forecast-logic-details" ${$("#forecast-logic-details")?.open ? "open" : ""}><summary>Show detailed formulas and forecasting assumptions</summary>
         <div class="logic-formulas"><p><strong>Inference uses throughput, not MFU. Training uses MFU.</strong> GPU-hours and GPU busy % describe observed usage; this forecast estimates capacity to provision, not future busy %. Busy % is not MFU.</p>
         <p><strong>Inference:</strong> A replica is one serving copy of the model. <code>replicas = round up (peak RPS / (RPS per replica x usable capacity share))</code>; <code>GPUs = replicas x GPUs per replica</code>.</p>
         <p><strong>Training:</strong> <code>work = 6 x parameters x training tokens</code>; <code>compute GPUs = round up (work / (active seconds x peak FLOP/s per GPU x MFU fraction))</code>. Use the larger compute/memory count, round to topology blocks, then multiply by concurrent runs.</p>
         <p>For history-based services, compare a recent average with a weekly trend plus weekday pattern using 14 held-out days, refit, then size against the busiest predicted day of each month. At least 42 consecutive days are needed; up to 84 are used. Missing history requires an explicit demand plan, not an assumed zero.</p></div>
-        <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
+        <details id="forecast-workspace-details" ${$("#forecast-workspace-details")?.open ? "open" : ""}><summary>Inspect actual workspace numbers for the selected service and month (not the small example)</summary>
+          <div id="forecast-logic-example">${forecastLogicExample(workspace, report)}</div>
+        </details>
       </details></section>`;
   }
   function inferenceServiceDemand(workspace, report) {

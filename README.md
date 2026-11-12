@@ -57,16 +57,22 @@ The interface uses a white background, dark text, and subdued chart colors.
 
 The first page starts with **How this capacity forecast is calculated**, followed
 by the Service, Organization, GPU SKU, and planning-start filters, then the
-scenario controls. The explanation starts with a small chatbot example: 16
-requests/second growing to 24, with each H100 serving 8 usable requests/second
-after keeping 20% spare. The requirement rises from 2 to 3 H100 GPUs, so add 1
-if 2 are already available. These fixed teaching numbers do not change the
-workspace inputs or forecast. Detailed calculations distinguish inference
-throughput from training MFU, then show a live worked example, a service-by-service
-conversion table, and the rollup into monthly GPU requirements and SKU shortages.
-Open **Show the formulas
-and live calculation** to inspect the numbers; they update with the selected
-service, month, growth, and filters.
+scenario controls. The explanation focuses on sizing each service, then adding
+GPU needs by SKU and month rather than adding growth percentages. A small,
+fixed two-service example shows Chat growing from 20 to 30 requests/second
+and Image tagging from 8 to 12. With usable rates of 8 and 4 requests/second
+per GPU after 20% headroom, they need 4 and 3 H100 GPUs. If usable company
+supply is the 6 GPUs already assigned, the shortage is 1 GPU. The example uses
+invented throughput, assumes one GPU per model copy and overlapping peaks,
+and does not change workspace inputs or forecasting calculations.
+
+Open **Show detailed formulas and forecasting assumptions** for the inference
+and training methods. Actual workspace calculations, including large service
+numbers, are in a separate nested **Inspect actual workspace numbers** section;
+they update with the selected service, month, growth, and filters. Current
+traffic alone does not establish sustainable serving capacity. The current
+engine still represents one serving configuration per service; the explanation
+does not add fleet telemetry ingestion or multi-model service support.
 
 - **Inference uses requests per second (RPS).** Demand is the incoming peak
   request rate. Throughput is the RPS one GPU replica can serve for that model
