@@ -528,6 +528,9 @@
     $("#pool-filter").innerHTML = `<option value="all">All GPU SKUs</option>${poolOptions(poolFilter)}`;
     $("#pool-filter").value = poolFilter;
     $("#start-month").value = state.startMonth;
+    $("#forecast-start-month").value = state.startMonth;
+    $("#forecast-start-form").hidden = view !== "planning";
+    $("#workspace-filters").hidden = view === "planning";
     document.querySelectorAll("nav button").forEach(b => {
       b.classList.toggle("active", b.dataset.view === view);
       if (b.dataset.view === view) b.setAttribute("aria-current", "page");
@@ -868,6 +871,17 @@
     rescheduleTraining(id, lane.dataset.trainingDrop);
   });
   document.addEventListener("submit", event => {
+    if (event.target.id === "forecast-start-form") {
+      event.preventDefault();
+      if (!event.target.reportValidity()) return;
+      const next = clone();
+      next.startMonth = $("#forecast-start-month").value;
+      if (!save(next, `Forecast started for ${next.startMonth}. Showing all services for six months.`, false, false)) return;
+      serviceFilter = "all"; teamFilter = "all"; poolFilter = "all";
+      planningMonth = next.startMonth;
+      render();
+      return;
+    }
     if (event.target.id !== "forecast-controls") return;
     event.preventDefault();
     const values = new FormData(event.target);

@@ -34,8 +34,13 @@
       <div><p class="eyebrow">FORECAST. ADJUST. PLAN.</p><h1 id="page-title">Capacity forecast</h1><p id="page-subtitle"></p></div>
       <button class="button primary" id="main-action">Export forecast</button>
     </section>
+    <form id="forecast-start-form" class="filterbar" aria-label="Start a forecast" hidden>
+      <label>Which month should the forecast start?<input type="month" id="forecast-start-month" required></label>
+      <button class="button primary" type="submit">Start forecast</button>
+      <span class="filter-note">All services · Six-month forecast</span>
+    </form>
     <div id="planning-introduction"></div>
-    <section class="filterbar" aria-label="Workspace filters">
+    <section id="workspace-filters" class="filterbar" aria-label="Workspace filters">
       <label>Service<select id="service-filter"><option value="all">All services</option></select></label>
       <label>Organization<select id="team-filter"><option value="all">All organizations</option></select></label>
       <label>GPU SKU<select id="pool-filter"><option value="all">All GPU SKUs</option></select></label>

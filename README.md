@@ -55,9 +55,17 @@ Open **Scenario planner**, the default page:
 
 The interface uses a white background, dark text, and subdued chart colors.
 
-The first page starts with **How this capacity forecast is calculated**, followed
-by the Service, Organization, GPU SKU, and planning-start filters, then the
-scenario controls. The planner separates **Inference** and **Training**, with
+The planner starts with **Which month should the forecast start?** and a
+**Start forecast** button, instead of the Service, Organization and GPU SKU
+filter bar. Choose a month and start one six-month forecast for all services.
+Changing the picker alone does not save or recalculate the forecast; submitting
+it saves the planning start, clears prior scope filters, and selects the first
+forecast month for inspection. Existing inputs and allocations are retained,
+and starting a forecast does not create another plan or workspace. Other pages
+keep their existing filters; organization and model drill-down remains available.
+
+**How this capacity forecast is calculated** follows the month picker, then
+the scenario controls. The planner separates **Inference** and **Training**, with
 inference GPU need, training GPU need, total demand and combined supply shortage
 at the top. The small explanation example uses 3 inference GPUs and 6 training
 GPUs: 9 total. Current allocated GPUs are 2 for inference and 4 for training; budgets default
