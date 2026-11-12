@@ -8,18 +8,25 @@
   const fmt = (n, decimals = 0) => n === null || n === undefined ? "Not available" :
     Number(n).toLocaleString("en-US", {maximumFractionDigits: decimals});
   const compact = n => new Intl.NumberFormat("en-US", {notation: "compact", maximumFractionDigits: 1}).format(n);
+  const usd = n => n === null || n === undefined ? "Not available" :
+    n.toLocaleString("en-US", {style: "currency", currency: "USD"});
+  const costValue = n => n >= 1e6 ?
+    `<span title="${usd(n)}" aria-label="${usd(n)}">${usd(n / (n >= 1e9 ? 1e9 : 1e6))} ${n >= 1e9 ? "billion" : "million"}</span>` : usd(n);
+  const signedGpus = n => `${n > 0 ? "+" : ""}${fmt(n)}`;
   const pct = n => n === null ? "Not available" : `${n >= 0 ? "+" : ""}${fmt(n, 1)}%`;
+  const fmtMonth = value => new Date(`${value}-01T00:00:00Z`).toLocaleDateString("en-US", {month: "long", year: "numeric", timeZone: "UTC"});
   let state;
   let storageBlocked = false;
   let initialError = "";
-  let forecastSaveMessage = "Not saved yet. Start or save this forecast to keep it.";
+  let forecastSaveMessage = "Not saved yet. Choose a month or save this forecast to keep it.";
   let forecastSaveError = false;
   try {
     const saved = localStorage.getItem(KEY);
     const parsed = saved ? JSON.parse(saved) : null;
     state = parsed ? M.validate(parsed) : M.demo();
+    if (!parsed) state.trainingHistory = M.demoTrainingHistory(state);
     if (parsed) forecastSaveMessage = "Saved in this browser. Edits auto-save when you finish editing.";
-    if (parsed && parsed.version < 3) initialError = "Workspace upgraded for GPU SKUs. Old family-level inventory is kept as 'variant not specified'; no variant has been guessed. Your services and plans are unchanged. Load the NVIDIA workload demo from Data & assumptions to replace the example data.";
+    if (parsed && parsed.version < 3) initialError = "Workspace upgraded for GPU SKUs. Old family-level inventory is kept as 'variant not specified'; no variant has been guessed. Your services and plans are unchanged. Load the sample workload demo from Data & assumptions to replace the example data.";
   } catch (error) {
     state = M.demo();
     storageBlocked = true;
@@ -28,6 +35,7 @@
     initialError = `Saved workspace could not be loaded: ${error.message} Showing a demo preview only. Export/repair the saved data outside this portal, import a valid workspace, or explicitly reset the demo. No data has been overwritten.`;
   }
   let view = "planning";
+  let plannerTab = "overview";
   const planningSectionState = new Map();
   let serviceFilter = "all";
   let teamFilter = "all";
@@ -40,14 +48,14 @@
   let startDate = endDate ? new Date(Date.parse(endDate) - 27 * 86400000).toISOString().slice(0, 10) : "";
   let editContext = null;
   const titles = {
-    planning: ["Bottom-up scenario planner", "Change service growth, add training, and drill into organizations and models.", "Export scenario"],
+    planning: ["GPU capacity planner", "Choose a forecast month up to two years ahead. Review inference and training in separate tabs.", "Export forecast"],
     overview: ["Organization consumption", "Understand service footprints, demand growth, and the baseline behind your capacity plan.", "+ Add consumption"],
     inference: ["Service plans", "Set up serving performance, user-based plans, and manual growth assumptions.", "+ Register service"],
     benchmarks: ["Performance profile library", "Reuse evidence-backed serving profiles, with explicit configuration and token-range safeguards.", "+ Add profile"],
     forecasts: ["Daily backtests", "Check simple next-day traffic predictions against recorded results.", "Export daily evidence"],
     training: ["Six-month training roadmap", "Turn model plans into compute estimates, gang sizes, and time-phased requirements.", "+ Add training plan"],
-    capacity: ["Capacity forecast", "Learn from service history. Adjust the plan. See when you need more GPUs.", "Export forecast"],
-    data: ["Data & assumptions", "Inspect provenance, maintain supply, and take your planning workspace with you.", "Export workspace"],
+    capacity: ["Advanced forecast", "Separate trend-based scenario and scheduled-training model; not the history-growth planner.", "Export advanced forecast"],
+    data: ["Data & assumptions", "Manage histories, service ownership, serving performance and GPU assumptions.", "Export workspace"],
   };
   function notice(message, error = false) {
     const el = $("#notice");
@@ -258,7 +266,7 @@
       serving = `<h3>Workspace calculation: ${esc(service.name)} in ${focused.month}</h3>
         <ol class="logic-calculation">
           <li>Start with ${fmt(estimate.baseRps, 2)} peak requests/second from ${selected.demand.source === "history" ? "the learned traffic forecast" : "the entered user-demand plan"}. Apply this service's growth and the global traffic change, then add launches:<br><code>${fmt(estimate.baseRps, 2)} x ${fmt(estimate.growthFactor, 6)} x ${fmt(1 + report.options.trafficAdjustmentPct / 100, 4)} + ${fmt(estimate.launchRps, 2)} = ${fmt(estimate.peakRps, 2)} peak requests/second.</code></li>
-          <li>One replica uses ${performance.gpusPerReplica} ${esc(skuName(service.pool))} GPUs and handles ${fmt(performance.rpsPerReplica, 4)} requests/second at the required response time. The ${pct(report.options.throughputChangePct)} throughput adjustment makes that ${fmt(throughput, 4)} requests/second. Keep ${fmt(service.headroom, 2)}% spare capacity, leaving ${fmt(throughput * capacityShare, 4)} usable requests/second per replica.</li>
+          <li>One replica uses ${performance.gpusPerReplica} ${esc(skuName(service.pool))} GPUs and handles ${fmt(performance.rpsPerReplica, 4)} requests/second at the required response time. The ${pct(report.options.throughputChangePct)} throughput adjustment makes that ${fmt(throughput, 4)} requests/second. Keep ${fmt(service.headroom, 2)}% headroom, so each replica is planned at ${fmt(throughput * capacityShare, 4)} requests/second.</li>
           <li>Round up to whole replicas, then multiply by GPUs per replica:<br><code>Round up (${fmt(estimate.peakRps, 2)} / ${fmt(throughput * capacityShare, 4)}) = ${fmt(estimate.gpus / performance.gpusPerReplica)} replicas.<br>${fmt(estimate.gpus / performance.gpusPerReplica)} replicas x ${performance.gpusPerReplica} GPUs = ${fmt(estimate.gpus)} required GPUs.</code></li>
         </ol><p class="help">Throughput source: ${esc(performance.source === "inline-assumption" ? "entered service assumption" : performance.source === "synthetic" ? "illustrative profile" : "user-supplied benchmark")}. Displayed rates are rounded; GPU totals use full precision.</p>`;
     } else serving = `<h3>One-service calculation</h3><p>${esc(selected ? selected.reason || estimate?.reason || "This service cannot be sized with the current inputs." : "No inference service matches these filters. Training on the selected SKU can still contribute below.")}</p>`;
@@ -285,7 +293,7 @@
     }
     return `<div class="logic-example">${serving}<h3>Repeat the calculation for every service</h3>
       <p>Each service has its own request size, response-time target, GPU SKU and throughput in requests/second (RPS). Size each service using its own RPS benchmark, then add its GPU requirement to the total:</p>
-      ${table(["Service / SKU", "Planned peak demand (RPS)", "Throughput (RPS / replica)", "Spare share", "GPUs per replica", "Required GPUs"], rows)}
+      ${table(["Service / SKU", "Planned peak demand (RPS)", "Throughput (RPS / replica)", "Headroom share", "GPUs per replica", "Required GPUs"], rows)}
       <div class="logic-training">${training}</div>
       <h3>The result for ${focused.month}, within the current filters</h3>
       <p><strong>${fmt(focused.inference)} inference GPUs + ${fmt(focused.training)} scheduled training GPUs = <span id="logic-total-gpus">${fmt(focused.required)}</span> required GPUs${focused.physicalComplete ? "" : " (partial: some workloads cannot be sized)"}.</strong> Group these counts by owning organization and exact GPU SKU. Monthly planning assumes service peaks and same-month training can overlap; it does not credit shared idle time.</p>
@@ -301,8 +309,8 @@
             <li><strong>Pick a trend.</strong> It tests two simple methods on the last 14 days, keeps the more accurate one, and refits it on all days. One is a recent average; the other is a trend with a weekday pattern.</li>
             <li><strong>Project six months.</strong> For each month, it takes the busiest predicted day, so the GPUs cover a peak day.</li>
             <li><strong>Add growth.</strong> Any extra growth you enter reaches its full percentage by month six. Launches are added on top.</li>
-            <li><strong>Turn traffic into copies.</strong> A copy is one running instance of the model. Each copy can serve a measured number of requests per second. We plan with 80% of that to keep 20% spare. Copies needed = traffic ÷ planned RPS per copy, rounded up.</li>
-            <li><strong>Turn copies into GPUs.</strong> GPUs = copies × GPUs per copy.</li>
+            <li><strong>Turn traffic into replicas.</strong> A replica is one running instance of the model. Each replica can serve a measured number of requests per second. We keep 20% of that free as headroom for traffic spikes, so each replica is planned at 80% of its measured RPS. Replicas needed = peak traffic ÷ (measured RPS per replica × 0.8), rounded up.</li>
+            <li><strong>Turn replicas into GPUs.</strong> GPUs = replicas × GPUs per replica.</li>
             <li><strong>Add services by GPU type.</strong> Each GPU type is totalled separately, because one type cannot cover another type's need.</li>
           </ul></li>
         <li><h3>2. Training: GPUs for training runs</h3>
@@ -319,16 +327,16 @@
           </ul></li>
       </ol>
       <div class="logic-key" id="service-growth-example"><h3>A small example for month six</h3>
-        <p>Illustrative numbers, not hardware benchmarks. All GPUs here are the same SKU, model copies use one GPU, and both segments can run at the same time.</p>
-        <p><strong>Inference:</strong> 8 requests/sec grows 50% to 12. Each GPU's usable RPS is 4 requests/sec (its measured RPS with 20% spare already removed). <strong>12 / 4 = 3 GPUs.</strong></p>
+        <p>Illustrative numbers, not hardware benchmarks. All GPUs here are the same SKU, model replicas use one GPU, and both segments can run at the same time.</p>
+        <p><strong>Inference:</strong> 8 requests/sec grows 50% to 12. Each GPU is measured at 5 requests/sec. We keep 20% free as headroom, so each GPU is planned at 4 requests/sec. <strong>12 / 4 = 3 GPUs.</strong></p>
         <p><strong>Training:</strong> 2 concurrent runs grow 50% to 3. Each run needs 2 GPUs. <strong>3 x 2 = 6 GPUs.</strong></p>
         <p><strong>Inference:</strong> Current allocated GPUs: 2, forecast 3, budget automatically 3, gap 1.<br><strong>Training:</strong> Current allocated GPUs: 4, forecast 6, budget automatically 6, gap 2.<br><strong>Total demand: 3 + 6 = 9 GPUs; 3 GPUs short.</strong> If someone changes the training budget to 5, forecast need stays 6 and the gap stays 2.</p>
       </div>
-      <p class="logic-key"><strong>Quick check for a one-GPU copy:</strong> GPUs needed = forecast requests per second ÷ usable RPS per GPU, rounded up. For a copy that needs several GPUs, first count the copies needed, then multiply by GPUs per copy. Size each model or configuration separately, and count a shared serving pool only once.</p>
+      <p class="logic-key"><strong>Quick check for a one-GPU replica:</strong> GPUs needed = peak requests per second ÷ (measured RPS per GPU × 0.8), rounded up. For a replica that needs several GPUs, first count the replicas needed, then multiply by GPUs per replica. Size each model or configuration separately, and count a shared serving pool only once.</p>
       <p class="logic-key">Both growth controls mean extra demand by month six, compounded to each forecast month; they are not monthly growth rates. Current traffic alone does not prove sustainable throughput. Unknown capacity means an assumption-based scenario. Keep totals split by SKU; spare GPUs of a different SKU are not automatic substitutes.</p>
       <details id="forecast-logic-details" ${$("#forecast-logic-details")?.open ? "open" : ""}><summary>Show detailed formulas and forecasting assumptions</summary>
         <div class="logic-formulas"><p><strong>Inference uses throughput, not MFU. Training uses MFU.</strong> GPU-hours and GPU busy % describe observed usage; this forecast estimates capacity to provision, not future busy %. Busy % is not MFU.</p>
-        <p><strong>Inference:</strong> A copy (replica) is one running instance of the model. Usable RPS per copy = measured RPS per copy x (1 - headroom), with headroom at 20%. <code>copies = round up (peak RPS / usable RPS per copy)</code>; <code>GPUs = copies x GPUs per copy</code>.</p>
+        <p><strong>Inference:</strong> A replica is one running instance of the model. Headroom is 20%, so each replica is planned at measured RPS per replica x 0.8. <code>replicas = round up (peak RPS / (measured RPS per replica x 0.8))</code>; <code>GPUs = replicas x GPUs per replica</code>.</p>
         <p><strong>Training:</strong> <code>work = 6 x parameters x training tokens</code>; <code>compute GPUs = round up (work / (active seconds x peak FLOP/s per GPU x MFU fraction))</code>. Use the larger compute/memory count, round to topology blocks, then multiply by concurrent runs.</p>
         <p>For history-based services, compare a recent average with a weekly trend plus weekday pattern on 14 held-out days. Pick the method with the lower mean absolute error, refit on all days, then size against the busiest predicted day of each month. At least 42 consecutive days are needed; up to 364 (52 weeks) are used. Missing history requires an explicit demand plan, not an assumed zero.</p>
         <p><strong>P90 band (history services):</strong> <code>P90 = P50 × (1 + 1.2816 × SD × √months ahead)</code>, where SD is the standard deviation of the 14 holdout one-day errors divided by mean traffic. The band applies only to the organic baseline; launches, growth and training are not widened. With no traffic or a flat history, P90 equals P50. This is a heuristic from 14 days, not a calibrated interval.</p></div>
@@ -440,18 +448,126 @@
       <div class="training-scroll"><div class="training-board">${horizon.map(m => `<section class="training-lane" data-training-drop="${m}" aria-label="Training scheduled for ${m}"><h3>${m}</h3>${plans.filter(t => t.month === m).map(t => `<article class="training-drag-card" draggable="true" data-training-drag="${esc(t.id)}"><span class="help">Drag to reschedule</span><h3>${esc(t.name)}</h3><p>${fmt(M.training(t, workspace.startMonth).totalGpus)} GPUs<br><span class="help">${esc(skuName(t.pool))}</span></p><label class="help">Move to month<select data-training-month="${esc(t.id)}" aria-label="Move ${esc(t.name)} to month">${horizon.map(month => `<option ${month === m ? "selected" : ""}>${month}</option>`).join("")}</select></label><div class="form-actions"><button class="text-button" data-edit-training="${esc(t.id)}">Edit model</button>${calibrationButton("training", t)}</div></article>`).join("") || '<p class="help">Drop a training plan here.</p>'}</section>`).join("")}</div></div>
       ${plans.some(t => !horizon.includes(t.month)) ? '<p class="panel-body help">Some plans are outside this horizon and do not contribute. Open Training roadmap to see them.</p>' : ""}</section>`;
   }
+  function plannerExplanation() {
+    return `<details class="panel collapsible-panel" id="planner-method"><summary class="panel-heading"><h2>How capacity is forecasted</h2></summary>
+      <ol class="logic-steps">
+        <li><h3>1. Look at demand and its growth</h3><p>Inference uses recorded requests per second. Training uses recorded peak GPU demand. Compare the latest pre-plan month with the same period last year, then continue that growth pace for the next six months.</p><p><strong>Example:</strong> +44% year-over-year growth becomes +20% over six months. You can change that six-month percentage in either data tab.</p></li>
+        <li><h3>2. Calculate GPUs needed</h3><p><strong>Inference:</strong> use forecast peak traffic and measured serving performance, with headroom. For 120 requests/sec and 50 requests/sec per GPU, 20% headroom means planning for 40 requests/sec per GPU: <strong>120 / 40 = 3 GPUs</strong>.</p><p><strong>Training:</strong> 100 GPUs of historical demand with +20% growth means <strong>120 GPUs</strong> at month six. This forecast does not add scheduled roadmap plans.</p></li>
+        <li><h3>3. Compare with the allocation baseline</h3><p><strong>Gap = forecast - allocation baseline.</strong> ${trainingAllocationNote(state.trainingAllocationBasis)} Inference still uses recorded allocations. The separate H100 comparison converts both sides using the same index.</p><p>Examples are illustrative, not hardware benchmarks. Monthly points show the trajectory; growth is entered once for the six-month period. Negative gaps do not release assigned GPUs.</p></li>
+      </ol><p class="logic-key">For dates beyond six months, continue the same growth pace: +20% per six months becomes +44% after twelve months, not +20% total. Long-range projections are scenarios, not validated predictions. Inference GPU sizing retains the existing high-demand P90 allowance when history supports it, plus each service's headroom. The throughput chart shows the growth projection, not the P90 peak. P90 is a heuristic, not a guarantee. A multi-GPU model is rounded to whole serving replicas. The advanced forecast's extra traffic/throughput controls and launches are separate and do not stack onto these growth inputs.</p></details>`;
+  }
+  function trainingAllocationNote(basis) {
+    return basis === "current-demand" ?
+      "Training assumes allocated GPUs equal current demand in the latest pre-plan month, with no spare capacity. Recorded allocations are preserved but are not used in this scenario's gap or cost." :
+      "Training uses retained recorded allocations, including saved company corrections in totals. Demand and allocated capacity can differ.";
+  }
+  function plannerDemandSummary(report, kind) {
+    const segment = report.segments[kind];
+    const name = kind === "inference" ? "Inference" : "Training";
+    return `<section class="panel planner-demand-summary" data-demand-summary="${kind}" aria-label="${name} GPU requirement">
+      <div class="panel-heading"><div><h2>${name} GPUs required</h2><p>Forecast for ${fmtMonth(report.targetMonth)}</p></div></div>
+      <div class="panel-body"><div class="demand-total"><strong data-demand-total>${fmt(segment.forecast)}</strong><span>physical GPUs</span></div>
+        <p class="description">${kind === "inference" ? "High-demand (P90) sizing with headroom." : "Historical peak demand projected with training growth."} Total across the SKUs below, not H100 equivalents. GPU types are not interchangeable.</p>
+        ${kind === "training" ? `<p class="help">${trainingAllocationNote(report.trainingAllocationBasis)}</p>` : ""}
+        ${table(["GPU SKU", kind === "training" && report.trainingAllocationBasis === "current-demand" ? "Assumed allocated" : "Allocated", "Required", "Gap"], segment.pools.map(p =>
+          `<tr data-demand-sku="${esc(p.pool)}"><td>${esc(skuName(p.pool))}</td><td>${fmt(p.allocated)}</td><td><strong>${fmt(p.forecast)}</strong></td><td>${signedGpus(p.gap)}</td></tr>`).join(""))}
+        ${segment.missing ? `<p class="error">${segment.missing} service/SKU segment(s) have missing inputs. The total is unavailable, not zero; known SKU requirements are still shown.</p>` : ""}
+      </div></section>`;
+  }
+  function plannerPhysicalSummary(report) {
+    return `<section class="panel" id="physical-summary"><div class="panel-heading"><div><h2>Physical GPU requirements and gap</h2><p>Forecast for ${fmtMonth(report.targetMonth)}. All GPU counts below are physical units, not H100 equivalents.</p></div></div>
+      ${table(["Workload", "Allocated baseline", "GPUs required", "Net GPU gap", "Additional GPUs needed", "Purchase estimate (USD)"],
+        [["Inference", report.segments.inference], ["Training", report.segments.training], ["Combined", report.physical]].map(([name, s]) =>
+          `<tr data-physical-summary="${name.toLowerCase()}"><td><strong>${name}</strong>${name === "Training" && report.trainingAllocationBasis === "current-demand" ? '<span class="subtext">Assumed allocation = current demand</span>' : ""}</td><td>${fmt(s.allocated)}</td><td><strong>${fmt(s.forecast)}</strong></td><td>${signedGpus(s.gap)}</td><td>${fmt(s.additionalGpus)}</td><td><strong>${costValue(s.costUsd)}</strong></td></tr>`).join(""))}
+      <p class="panel-body help">${trainingAllocationNote(report.trainingAllocationBasis)} Net gap = required minus allocation baseline. Additional GPUs sum positive gaps by SKU and workload; surpluses are not reassigned across GPU types or between inference and training. Purchase estimate covers one-time GPU hardware only, not servers, networking, tax, power or operations.</p></section>`;
+  }
+  function plannerPurchaseCosts(report) {
+    return `<section class="panel" id="gpu-purchase-costs"><div class="panel-heading"><div><h2>GPU purchase cost assumptions</h2><p>SKU-specific starting estimates use public pricing references checked November 12, 2026, not live procurement quotes. SXM estimates are indicative allowances, not complete-system prices. Earlier all-$30,000 defaults are updated once; custom prices and cleared fields are preserved. Edit each price for your procurement estimate; changes auto-save.</p></div></div>
+      ${table(["GPU SKU", "Additional GPUs needed", "USD per GPU", "Estimated hardware cost (USD)"], report.pools.map(p => {
+        const assumption = M.GPU_PURCHASE_ASSUMPTIONS.find(a => a.pool === p.pool);
+        return `<tr><td>${esc(skuName(p.pool))}${assumption ? `<span class="subtext"><a href="${esc(assumption.source)}" target="_blank" rel="noopener noreferrer">Starting-price reference</a></span>` : ""}</td><td>${fmt(p.additionalGpus)}</td><td><input type="number" min="0" max="1000000000" step="any"
+          data-gpu-price="${esc(p.pool)}" aria-label="USD purchase price per ${esc(skuName(p.pool))} GPU" placeholder="Enter price"
+          value="${p.unitPriceUsd === null ? "" : p.unitPriceUsd}">${assumption ? `<span class="subtext">Starting estimate: ${usd(assumption.usdPerGpu)}</span><details class="price-basis collapsible-panel"><summary>Price basis</summary><p>${esc(assumption.basis)}</p></details>` : ""}</td><td><strong>${costValue(p.costUsd)}</strong>${p.costReason ? `<span class="subtext">${esc(p.costReason)}</span>` : ""}</td></tr>`;
+      }).join(""))}
+      <p class="panel-body description"><strong>Total estimated purchase cost: <span data-purchase-total>${costValue(report.physical.costUsd)}</span> USD.</strong>
+        ${report.physical.costUsd === null ? esc(report.physical.costReason) : "This is an estimate based on your entered assumptions, not a supplier quote."}
+        Blank prices mean unknown, not free. No price is needed for a SKU with zero additional demand. Cost is never calculated by multiplying an H100-equivalent gap by a GPU price.</p></section>`;
+  }
+  function plannerOverview(report) {
+    const forecastMonth = fmtMonth(report.targetMonth);
+    const gap = report.normalizedGap;
+    const missing = report.rows.filter(r => r.forecast === null || r.allocated === null);
+    const needs = kind => table(["Service", "Team", "GPU SKU", kind === "training" && report.trainingAllocationBasis === "current-demand" ? "Assumed allocated GPUs" : "Current allocated GPUs", `GPU need - ${forecastMonth}`, "Gap"],
+      report.rows.filter(r => r.kind === kind).map(r => `<tr><td class="service-name">${esc(r.name)}${r.reason ? `<span class="subtext">${esc(r.reason)}</span>` : ""}</td><td>${esc(r.team)}</td><td>${esc(skuName(r.pool))}</td><td>${fmt(r.allocated)}</td><td>${fmt(r.forecast)}</td><td>${r.gap > 0 ? "+" : ""}${fmt(r.gap)}</td></tr>`).join(""));
+    return `${plannerPhysicalSummary(report)}
+      <div class="planner-demand-grid">${plannerDemandSummary(report, "inference")}${plannerDemandSummary(report, "training")}</div>
+      ${plannerPurchaseCosts(report)}
+      ${plannerExplanation()}
+      ${report.futureMonths.length > 6 ? '<p class="callout">Long-range scenario: the selected six-month growth pace continues through the forecast date. The P90 allowance is not calibrated for this long-range horizon.</p>' : ""}
+      ${missing.length ? `<p class="callout">${missing.length} service/SKU segment(s) need history, a growth assumption, or serving evidence. Incomplete totals are unavailable, not zero. Open the corresponding data tab to resolve them.</p>` : ""}
+      ${report.pools.some(p => !M.COMPUTE_SPECS.some(s => s.pool === p.pool)) ? '<p class="callout">H100 normalization is unavailable for unspecified GPU variants. Supply exact SKUs and matching performance evidence; a family name alone does not identify a conversion factor.</p>' : ""}
+      ${report.pools.some(p => p.allocationAdjusted) ? '<p class="callout info">Applicable saved company allocation corrections are included in summary and SKU totals, not attributed to service rows. Training corrections apply only when using recorded allocations.</p>' : ""}
+      ${report.pools.some(p => p.trainingOverrideIgnored) ? '<p class="callout info">Saved company training allocation corrections are preserved but not applied while the no-spare-capacity assumption is selected.</p>' : ""}
+      ${report.rows.some(r => r.synthetic) ? '<p class="help">This selection includes synthetic history. It is demonstration data, not measured fleet demand.</p>' : ""}
+      <section class="panel"><div class="panel-heading"><div><h2>Inference needs by service, team and SKU</h2><p>Read-only requirements for ${forecastMonth}. Edit growth in the Inference tab.</p></div></div>${needs("inference")}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>Training needs by service, team and SKU</h2><p>Read-only requirements for ${forecastMonth}. Edit growth in the Training tab. ${trainingAllocationNote(report.trainingAllocationBasis)}</p></div></div>${needs("training")}</section>
+      <details class="panel collapsible-panel" id="h100-comparison"><summary class="panel-heading"><h2>H100-equivalent comparison - not physical GPU counts</h2></summary>
+        <div class="panel-body"><div class="kpis planner-kpis">
+          ${metric("Allocation baseline in H100 equivalents", fmt(report.normalizedAllocated, 1), report.trainingAllocationBasis === "current-demand" ? "Includes assumed training allocation equal to current demand" : "Approximate H100 SXM 80GB compute equivalents", true)}
+          ${metric("Combined forecast in H100 equivalents", fmt(report.normalizedForecast, 1), `${forecastMonth}: inference + training, not physical GPU counts`)}
+          ${metric("Gap in H100 equivalents", `${gap > 0 ? "+" : ""}${fmt(gap, 1)}`, "Comparison index only; not a quantity to purchase")}
+        </div></div>
+        <p class="panel-body description">H100 equivalent = physical GPU count x (selected SKU FP32 TFLOPS / 67). Both allocations and forecasts use exactly the same ratio. This index ignores Tensor Core precision, memory, bandwidth, and interconnects; it must not be used as an inference or training speedup claim. H200 and H100 have the same FP32 rating despite different memory performance.</p>
+        ${table(["GPU SKU", "Allocated", "Forecast", "Gap", "FP32 TFLOPS / GPU", "H100 / GPU", "Source"], report.pools.map(p => {
+          const spec = M.COMPUTE_SPECS.find(s => s.pool === p.pool);
+          return `<tr><td>${esc(skuName(p.pool))}</td><td>${fmt(p.allocated)}</td><td>${fmt(p.forecast)}</td><td>${p.gap > 0 ? "+" : ""}${fmt(p.gap)}</td><td>${fmt(spec?.fp32)}</td><td>${spec ? fmt(spec.fp32 / 67, 3) : "Unspecified variant"}</td><td>${spec ? `<a href="${esc(spec.source)}" target="_blank" rel="noopener noreferrer">Published specification</a>` : "No conversion"}</td></tr>`;
+        }).join(""))}
+      </details>`;
+  }
+  function plannerDataTab(report, kind) {
+    const forecastMonth = fmtMonth(report.targetMonth);
+    const inference = kind === "inference", name = inference ? "Inference" : "Training";
+    const rows = inference ? report.inferenceRows : report.trainingRows;
+    const points = report.series[kind];
+    const unit = inference ? "requests/sec" : "GPUs";
+    const tableRows = rows.map(r => `<tr><td class="service-name">${esc(r.name)}<span class="subtext">${esc(r.team)}<br>${esc(skuName(r.pool))}${r.synthetic ? "<br>Synthetic history" : ""}</span></td>
+      <td>${fmt(r.current, inference ? 1 : 0)}<span class="subtext">${unit} in ${r.baselineMonth}${inference && r.history.at(-1).partial ? `; through day ${r.history.at(-1).days}` : ""}${r.drivers ? "; entered demand drivers" : ""}</span></td>
+      <td>${pct(r.yoyPct)}<span class="subtext">${r.yoyPct === null ? "Matching prior-year history unavailable or zero" : "Same period one year earlier"}</span></td>
+      <td class="planner-growth-cell"><label class="help">Next six months (%)<input type="number" min="-100" max="10000" step="any" required
+        value="${r.growthPct === null ? "" : Number(r.growthPct.toFixed(1))}"
+        data-planner-growth="${kind}" data-planner-service="${esc(r.serviceId)}" data-planner-pool="${esc(r.pool)}" aria-label="Six-month ${kind} growth for ${esc(r.name)} on ${esc(skuName(r.pool))}"></label>
+        <span class="subtext">${r.manual ? "Your growth assumption" : "Following historical pace"}; suggested ${pct(r.suggestedGrowthPct)}</span>
+        <button class="text-button" data-historical-pace="${kind}" data-planner-service="${esc(r.serviceId)}" data-planner-pool="${esc(r.pool)}" ${r.suggestedGrowthPct === null ? "disabled" : ""}>Use historical pace</button></td>
+      <td>${fmt(r.selected.value, inference ? 1 : 0)}<span class="subtext">${unit}</span></td><td><strong>${fmt(r.forecast)}</strong><span class="subtext"><strong>${esc(skuName(r.pool))}</strong> physical GPUs</span><span class="subtext">${inference ? `High-demand (P90) sizing + headroom; P50: ${fmt(r.selected.gpusP50)} GPUs` : "Rounded up to whole GPUs"}</span>${r.reason ? `<span class="subtext error">${esc(r.reason)}</span>` : ""}</td></tr>`).join("");
+    return `${plannerDemandSummary(report, kind)}
+      <section class="panel"><div class="panel-heading"><div><h2>${name}: last 12 months and next ${report.futureMonths.length} months</h2>
+      <p>${inference ? "Total recorded inference throughput (average requests/sec), followed by the selected growth projection." : "Sum of service/SKU peak concurrent GPU needs, followed by the selected growth projection. Service peaks may occur at different times."}</p></div></div>
+      <div class="chart-wrap"><div class="legend"><span>Solid: historical demand</span><span>Dotted: ${report.futureMonths.length}-month projection</span></div>${chart(points, [{key: "value", name: `${name} ${unit}`, color: inference ? "var(--accent)" : "var(--amber)"}], `${name}: 12 months of historical ${unit} and ${report.futureMonths.length} projected months`, 12)}</div>
+      <p class="panel-body help">The table below shows demand and GPU need for ${forecastMonth}, the month selected above. ${report.futureMonths.length > 6 ? "Beyond six months, the same growth pace continues; this is a long-range scenario, not a validated prediction." : ""} Missing history is a gap in the chart, not zero. ${inference ? "Average RPS is calculated from daily requests. GPU sizing uses peak RPS, not the chart's average. A partial latest month uses observed days; YoY compares matching dates." : "History records monthly peak GPU demand and allocated GPUs separately. A zero-demand month must have an explicit zero record."}
+      ${rows.some(r => r.synthetic) ? " Includes clearly labeled synthetic demo data." : ""}</p></section>
+      <section class="panel"><div class="panel-heading"><div><h2>${name} demand by service</h2><p>YoY is shown for context. Continue that annual pace or enter one growth percentage for the next six months. +44% YoY means +20% over six months, not +44%. Changes auto-save when you leave the field.</p></div></div>
+      ${table(["Service / team / SKU", "Current demand", "Observed YoY growth", "Six-month growth", `Demand - ${forecastMonth}`, `Physical GPU need - ${forecastMonth}`], tableRows)}</section>
+      ${inference ? '<p class="help">Rates replace the old extra-growth adjustment; they are not added on top of it. Requests from different models are not equal units of work, so each service is sized separately before GPUs are summed.</p>' :
+      trainingHistoryControls()}`;
+  }
+  function trainingHistoryControls() {
+    return `<section class="panel"><div class="panel-heading"><div><h2>Training history data</h2><p>Import monthly demand and allocation records. Scheduled roadmap plans are preserved in workspace exports but are not added to this forecast.</p></div></div><div class="panel-body">
+        <label>Training allocation baseline <select data-training-allocation-basis aria-label="Training allocation baseline">
+          <option value="current-demand" ${state.trainingAllocationBasis === "current-demand" ? "selected" : ""}>Assume allocation equals current demand (no spare capacity)</option>
+          <option value="recorded" ${state.trainingAllocationBasis === "recorded" ? "selected" : ""}>Use recorded allocations</option>
+        </select></label><p class="help">${trainingAllocationNote(state.trainingAllocationBasis)} Changing this setting does not overwrite history or affect inference.</p>
+        <div class="form-actions"><label class="button subtle">Import training history JSON<input type="file" id="training-history-import" accept=".json,application/json"></label>
+        <button class="button subtle" data-training-history-template>Download import template</button>
+        <button class="button subtle" data-training-history-export>Export training history</button>
+        <button class="button subtle" data-training-history-demo ${state.trainingHistory?.length ? "disabled" : ""}>Add synthetic training history</button></div>
+        <p class="help">Required fields: serviceId, pool, month (YYYY-MM), peakGpus, allocatedGpus, source ("user-entered" or "synthetic"). Import merges records; matching service/SKU/month rows are replaced only after confirmation. The template is synthetic example data, not a real measurement.</p>
+      </div></section>`;
+  }
   function planningView() {
-    planningMonth = state.startMonth;
-    const services = chosenServices();
-    const quick = services.find(s => s.id === serviceFilter) || services.find(s => s.id === planningQuickService) || services[0];
-    if (quick) planningQuickService = quick.id;
-    const report = M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter);
-    const scope = serviceFilter !== "all" || teamFilter !== "all" || poolFilter !== "all" ?
-      `<p class="description">Selected scope: ${esc(serviceFilter !== "all" ? state.services.find(s => s.id === serviceFilter).name : teamFilter !== "all" ? teamFilter : "All services")}${poolFilter !== "all" ? ` / ${esc(skuName(poolFilter))}` : ""}. <button class="text-button" data-planning-root>Back to company forecast</button></p>` : "";
-    return `${forecastLogicPanel(state, report)}${scope}
-      <div class="callout info">Build the plan from services upward. Edit a growth number or drag its slider; results preview immediately and save on release or when you leave the field. Drag training cards between months, or use their month selectors. The demo's benchmark pairs are illustrative, not NVIDIA performance claims.</div>
-      <div id="planning-results">${planningResults(state, report)}</div>
-      <section class="panel"><div class="panel-heading"><h2>How normalization works</h2></div><div class="panel-body description">For each workload: ratio = benchmark throughput per selected-SKU GPU / benchmark throughput per H100 SXM GPU. H100 equivalents = required GPUs x that ratio. Convert back for that same workload: equivalents / ratio. Compare identical model versions, precision, request sizes and response-time targets; enter full-replica throughput divided by its GPU count.<br>Inference uses requests/second/GPU (RPS/GPU); training uses training tokens/second/GPU. Ratios are workload-specific, not a universal H100-to-B200 conversion. A GB200 superchip contains a CPU and two GPUs; it is not one interchangeable GPU.<br>Missing, changed or future-dated evidence makes normalized totals unavailable. Physical SKU demand remains visible. This index does not prove memory fit, interconnect compatibility, or that a job can move to another GPU.</div></section>`;
+    const report = M.plannerForecast(state, serviceFilter, teamFilter, poolFilter);
+    return `<div class="planner-tabs" role="tablist" aria-label="Capacity planner sections">${["overview", "inference", "training"].map(tab =>
+      `<button type="button" role="tab" id="planner-tab-${tab}" aria-controls="planner-tabpanel" aria-selected="${plannerTab === tab}" tabindex="${plannerTab === tab ? 0 : -1}" data-planner-tab="${tab}">${tab[0].toUpperCase() + tab.slice(1)}</button>`).join("")}</div>
+      <div role="tabpanel" id="planner-tabpanel" aria-labelledby="planner-tab-${plannerTab}" tabindex="0">${plannerTab === "overview" ? plannerOverview(report) : plannerDataTab(report, plannerTab)}</div>`;
   }
   function previewServiceGrowth(input, persist) {
     const status = input.closest(".service-growth").querySelector("[data-growth-status]");
@@ -536,17 +652,42 @@
   }
   function dataView() {
     const synthetic = state.records.filter(r => r.source === "synthetic").length;
-    return `<div class="callout">This is a browser-local scenario workspace, not a live company telemetry feed. ${synthetic} of ${state.records.length} consumption rows are synthetic. User-entered rows are manual observations, not verified connector measurements. No data is sent to a backend.</div>
-      <section class="panel"><div class="panel-heading"><div><h2>Supply by GPU SKU</h2><p>Supply = installed − unavailable − reserve + additions. Counts are individual GPUs, not servers or racks.</p></div><button class="button subtle" data-action="supply">Edit supply</button></div>${table(["GPU SKU", "Installed", "Unavailable", "Protected reserve", "Base usable"], M.activePools(state).map(p => {const s = state.supply[p]; return `<tr><td>${esc(skuName(p))}</td><td>${fmt(s.installed)}</td><td>${fmt(s.unavailable)}</td><td>${fmt(s.reserve)}</td><td>${fmt(s.installed - s.unavailable - s.reserve)}</td></tr>`;}).join(""))}</section>
+    const services = chosenServices();
+    const allocations = M.recordedAllocations(state, services.map(s => s.id));
+    const serviceRows = services.map(s => {
+      const performance = M.profileFor(state, s);
+      return `<tr><td class="service-name">${esc(s.name)}</td><td>${esc(s.team)}</td><td>${esc(skuName(s.pool))}</td>
+        <td>${fmt(allocations.get(s.id))}</td><td>${s.demandMethod === "drivers" ? "Entered demand drivers" : "Recorded traffic"}</td>
+        <td>${performance.available ? `${fmt(performance.rpsPerReplica, 2)} RPS / ${fmt(performance.gpusPerReplica)} GPUs` : "Unavailable"}<span class="subtext">${esc(performance.available ? performance.name : performance.reason)}</span></td>
+        <td>${fmt(s.headroom, 1)}%</td><td><button class="text-button" data-edit-service="${esc(s.id)}">Configure service</button></td></tr>`;
+    }).join("");
+    const selectedIds = new Set(services.map(s => s.id));
+    const records = state.records.filter(r => selectedIds.has(r.serviceId));
+    const dates = records.map(r => r.date).sort();
+    return `<div class="callout">This is a browser-local workspace, not live telemetry. ${synthetic} of ${state.records.length} inference history rows are synthetic. User-entered observations are not independently verified. Current file imports and exports use JSON; CSV-backed storage is not implemented yet.</div>
+      <section class="panel" id="data-services"><div class="panel-heading"><div><h2>Services, ownership and serving inputs</h2><p>Manage each service's team, exact GPU SKU, serving performance and headroom. Growth is edited in the planner, not here.</p></div><button class="button subtle" data-action="service">Add service</button></div>
+        ${table(["Service", "Team", "GPU SKU", "Recorded inference allocation", "Demand source", "Serving performance", "Headroom", ""], serviceRows)}
+        <p class="panel-body help">Allocations are retained from daily GPU-hours / 24, rounded up. Linked profiles must match the model configuration, SKU and request sizes. A serving replica can use multiple GPUs; its throughput is for the full group.</p></section>
+      <section class="panel" id="data-inference-history"><div class="panel-heading"><div><h2>Inference history and allocations</h2><p>${fmt(records.length)} daily records in the selected scope${dates.length ? `, from ${dates[0]} through ${dates.at(-1)}` : ""}. Update daily requests, peak RPS and allocated GPU-hours together.</p></div><button class="button subtle" data-action="consumption">Add daily record</button></div>
+        <div class="panel-body description">For bulk updates, import workspace JSON below. Exact YoY growth needs matching prior-year records, beyond the twelve months displayed in the chart. Missing data remains unavailable, not zero.
+        <div class="form-actions"><button class="button subtle" data-open-planner-tab="inference">View inference history and forecast</button></div></div></section>
+      ${trainingHistoryControls()}
+      ${plannerPurchaseCosts(M.plannerForecast(state, serviceFilter, teamFilter, poolFilter))}
+      <section class="panel" id="data-performance"><div class="panel-heading"><div><h2>Performance profiles</h2><p>Maintain reusable serving measurements; select one in a service's configuration.</p></div><button class="button subtle" data-action="benchmark">Add profile</button></div>
+        <div class="panel-body">${benchmarksView()}</div></section>
+      <section class="panel" id="data-normalization"><div class="panel-heading"><div><h2>H100 normalization assumptions</h2><p>Approximate FP32 compute index, not measured inference or training speed.</p></div></div>
+        <div class="panel-body description">H100 equivalents = physical GPUs x selected SKU FP32 TFLOPS / 67. The same factor is used for allocations and forecasts. This reporting index does not change a service's assigned GPU type or prove that hardware can be substituted.</div>
+        ${table(["GPU SKU", "FP32 TFLOPS / GPU", "H100 equivalents / GPU", "Evidence"], M.COMPUTE_SPECS.map(s => `<tr><td>${esc(skuName(s.pool))}</td><td>${fmt(s.fp32)}</td><td>${fmt(s.fp32 / 67, 3)}</td><td><a href="${esc(s.source)}" target="_blank" rel="noopener noreferrer">Published specification</a></td></tr>`).join(""))}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>Supply by GPU SKU</h2><p>Supporting inventory, not recorded allocations. These counts do not change the planner's demand-versus-allocation gap.</p></div><button class="button subtle" data-action="supply">Edit supply</button></div>${table(["GPU SKU", "Installed", "Unavailable", "Protected reserve", "Base usable"], M.activePools(state).map(p => {const s = state.supply[p]; return `<tr><td>${esc(skuName(p))}</td><td>${fmt(s.installed)}</td><td>${fmt(s.unavailable)}</td><td>${fmt(s.reserve)}</td><td>${fmt(s.installed - s.unavailable - s.reserve)}</td></tr>`;}).join(""))}</section>
       <section class="panel"><div class="panel-heading"><div><h2>Commissioned additions</h2><p>Capacity becomes usable at the start of the selected month; readiness is a user assumption.</p></div><button class="button subtle" data-action="addition">+ Addition</button></div>${table(["GPU SKU", "Available from", "GPUs", ""], state.supply.additions.map((a, i) => `<tr><td>${esc(skuName(a.pool))}</td><td>${a.month}</td><td>${fmt(a.gpus)}</td><td><button class="text-button" data-remove-addition="${i}">Remove</button></td></tr>`).join(""))}</section>
-      <section class="panel"><div class="panel-heading"><div><h2>GPU SKU catalog</h2><p>Memory and form factor identify the variant. Serving throughput must come from a matching workload test.</p></div></div>${table(["SKU", "Family", "Memory / GPU", "Form factor", "Source"], M.SKU_CATALOG.filter(s => !s.legacy || M.activePools(state).includes(s.id)).map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.family)}</td><td>${s.memoryGB === null ? "Not specified" : `${s.memoryGB} GB ${s.memoryType}`}</td><td>${s.formFactor}</td><td>${s.source ? `<a href="${esc(s.source)}" target="_blank" rel="noopener noreferrer">NVIDIA specs</a>` : "Legacy family only"}</td></tr>`).join(""))}</section>
-      <section class="panel"><div class="panel-heading"><div><h2>NVIDIA workload areas</h2><p>Publicly documented areas, not a ranked compute-spending breakdown. Demo volumes are illustrative.</p></div></div>${table(["Area", "Work being planned", "Source"], M.WORKLOAD_AREAS.map(w => `<tr><td class="service-name">${esc(w.name)}</td><td class="workload-description">${esc(w.description)}</td><td><a href="${esc(w.source)}" target="_blank" rel="noopener noreferrer">Read source</a></td></tr>`).join(""))}<div class="panel-body description">For render, simulation and evaluation services, a request means one fixed, benchmarked operation. Measure its throughput in requests/second using a matching test, not a text-generation benchmark. The dense training calculator is not a simulator or a universal robotics/video-model estimator.</div></section>
-      <section class="panel"><div class="panel-heading"><h2>Workspace portability</h2></div><div class="panel-body"><p class="description">Version-3 exports include exact GPU SKU identifiers and forecast adjustments. Older family-only inventory remains labeled variant not specified. Import or loading the NVIDIA demo replaces the workspace only after confirmation.</p><div class="data-tools"><button class="button subtle" data-export-workspace>Export JSON</button><label class="button subtle">Import JSON <input type="file" id="import-file" accept=".json,application/json"></label><button class="button subtle" data-action="reset">Load NVIDIA workload demo</button></div></div></section>
-      <section class="panel"><div class="panel-heading"><h2>How the forecast uses these inputs</h2></div><div class="panel-body description">Capacity forecast learns a recent average or weekly trend from up to 364 consecutive daily records (52 weeks). It compares 14-day predictions before selecting and refitting the method. Forecast adjustments are saved with the workspace.<br>User-based plans can replace the learned demand for new services. They multiply users, sessions, requests and model calls, account for calls avoided by cache, and apply a peak-traffic factor. Annual growth applies to users in this mode. Launch traffic is added once.<br>Selected performance profiles must match the service configuration and request sizes. Missing inputs remain visible as partial demand. Daily backtests are a separate next-day traffic check.</div></section>
+      <section class="panel"><div class="panel-heading"><div><h2>GPU SKU catalog</h2><p>Memory and form factor identify the variant. Serving throughput must come from a matching workload test.</p></div></div>${table(["SKU", "Family", "Memory / GPU", "Form factor", "Source"], M.SKU_CATALOG.filter(s => !s.legacy || M.activePools(state).includes(s.id)).map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.family)}</td><td>${s.memoryGB === null ? "Not specified" : `${s.memoryGB} GB ${s.memoryType}`}</td><td>${s.formFactor}</td><td>${s.source ? `<a href="${esc(s.source)}" target="_blank" rel="noopener noreferrer">Hardware specifications</a>` : "Legacy family only"}</td></tr>`).join(""))}</section>
+      <section class="panel"><div class="panel-heading"><div><h2>Example workload areas</h2><p>Generic planning examples. Demo volumes are illustrative, not a company's actual usage.</p></div></div>${table(["Area", "Work being planned"], M.WORKLOAD_AREAS.map(w => `<tr><td class="service-name">${esc(w.name)}</td><td class="workload-description">${esc(w.description)}</td></tr>`).join(""))}<div class="panel-body description">For render, simulation and evaluation services, a request means one fixed, benchmarked operation. Measure its throughput in requests/second using a matching test, not a text-generation benchmark. The dense training calculator is not a simulator or a universal robotics/video-model estimator.</div></section>
+      <section class="panel"><div class="panel-heading"><h2>Workspace portability</h2></div><div class="panel-body"><p class="description">Version-3 exports include exact GPU SKU identifiers and forecast adjustments. Older family-only inventory remains labeled variant not specified. Import or loading the sample demo replaces the workspace only after confirmation. Original demo service/profile names are updated to generic labels when loaded; custom names and all planning inputs are preserved.</p><div class="data-tools"><button class="button subtle" data-export-workspace>Export JSON</button><label class="button subtle">Import JSON <input type="file" id="import-file" accept=".json,application/json"></label><button class="button subtle" data-action="reset">Load sample workload demo</button></div></div></section>
+      <section class="panel"><div class="panel-heading"><h2>How the forecast uses these inputs</h2></div><div class="panel-body description">The planner compares recorded demand with the same period last year, converts that annual pace to six-month growth, and projects to the selected date. Growth edits belong in the Inference and Training tabs.<br>Inference uses peak traffic and matching serving performance, with headroom and the existing P90 heuristic. Entered demand drivers can provide a baseline for new services without traffic history; they still need an explicit growth assumption when YoY is unavailable.<br>Training uses historical peak GPU demand by service and SKU. Scheduled roadmap plans are retained in saved workspaces but are not added to the projection. Long-range forecasts are scenarios, not validated predictions.</div></section>
       <section class="panel"><div class="panel-heading"><h2>Evidence & limitations</h2></div><div class="panel-body description"><strong>Observed:</strong> only what you manually enter; not independently verified.<br><strong>Derived:</strong> allocation summaries, comparable-period growth, replicas, compute/memory screens and monthly gaps.<br><strong>Synthetic:</strong> seeded 200,000-GPU inventory, 24-month daily service history in the updated demo, performance profiles and roadmaps. Independent of the Philly experiment.<br><strong>Not implemented:</strong> collectors, real-time streaming, effective-dated service migrations, shared-GPU attribution, authentication, uncertainty calibration, topology validation or scheduler enforcement.<br>FLOPs describe work; FLOP/s describes rate. Busy-time utilization must not be multiplied by hardware peak and called measured FLOP/s.<br>Historical YoY/two-year comparisons remain unavailable without complete matching history. Every growth rate in the inference planner is a scenario assumption.<br><a href="../README.md">Read the framework and reproduction instructions</a></div></section>`;
   }
   function makePlanningSectionsCollapsible(root) {
-    for (const section of root.querySelectorAll("section.panel")) {
+    for (const section of root.querySelectorAll(":scope > section.panel")) {
       const heading = section.querySelector(":scope > .panel-heading");
       if (!heading) continue;
       const key = section.id || heading.querySelector("h2").textContent;
@@ -565,6 +706,7 @@
     for (const details of root.querySelectorAll("details")) details.classList.add("collapsible-panel");
   }
   function render() {
+    if (view === "planning") {serviceFilter = "all"; teamFilter = "all"; poolFilter = "all";}
     $("#page-title").textContent = titles[view][0];
     $("#page-subtitle").textContent = titles[view][1];
     $("#main-action").textContent = titles[view][2];
@@ -575,10 +717,14 @@
     $("#pool-filter").innerHTML = `<option value="all">All GPU SKUs</option>${poolOptions(poolFilter)}`;
     $("#pool-filter").value = poolFilter;
     $("#start-month").value = state.startMonth;
-    $("#forecast-start-month").value = state.startMonth;
+    $("#forecast-start-month").value = state.plannerTargetMonth ?? state.startMonth;
+    $("#forecast-start-month").min = state.startMonth;
+    $("#forecast-start-month").max = M.months(state.startMonth, M.PLANNER_MAX_MONTHS_AHEAD + 1).at(-1);
+    $("#forecast-window").textContent = `Available dates: ${fmtMonth(state.startMonth)} - ${fmtMonth($("#forecast-start-month").max)}`;
     $("#forecast-start-form").hidden = view !== "planning";
     forecastSaveStatus(forecastSaveMessage, forecastSaveError);
     $("#workspace-filters").hidden = view === "planning";
+    $("#start-month").closest("label").hidden = view === "planning";
     document.querySelectorAll("nav button").forEach(b => {
       b.classList.toggle("active", b.dataset.view === view);
       if (b.dataset.view === view) b.setAttribute("aria-current", "page");
@@ -586,7 +732,7 @@
     });
     $("#content").innerHTML = ({overview, inference: inferenceView, benchmarks: benchmarksView, forecasts: forecastsView,
       training: trainingView, capacity: capacityView, planning: planningView, data: dataView})[view]();
-    if (view === "planning") makePlanningSectionsCollapsible($("#content"));
+    if (view === "data") makePlanningSectionsCollapsible($("#content"));
     const logic = $("#content .forecast-logic");
     $("#planning-introduction").replaceChildren(...(logic ? [logic] : []));
   }
@@ -604,15 +750,13 @@
       const s = state.services.find(s => s.id === id) || {name: "", team: "", pool: "H100-SXM-80GB", gpusPerReplica: 8, rpsPerReplica: 20, annualGrowth: 30, monthlyLaunchRps: 0, headroom: 20, profile: "",
         demandMethod: "historical", benchmarkId: "", workloadKey: "", inputTokens: 1024, outputTokens: 256, drivers: M.defaultDrivers()};
       title = id ? "Configure service profile" : "Register a service";
-      intro = "Choose historical-peak growth OR a driver scenario. Historical mode needs consumption history; drivers can plan a new service. Linked profiles must match configuration and token range. Inline values are used only when no library profile is selected.";
+      intro = "Choose recorded traffic or entered demand drivers as the baseline. Edit six-month growth in the planner tabs. A replica is one running model instance, which may need several GPUs. Linked performance profiles must match the configuration and token range; inline values apply only when no profile is selected.";
       fields = field("name", "Service name", s.name, "text", 'maxlength="150"') + field("team", "Owning team", s.team, "text", 'maxlength="150"') +
         selectField("pool", "GPU SKU", poolOptions(s.pool)) + field("gpusPerReplica", "GPUs per replica", s.gpusPerReplica, "number", 'min="1" max="1024" step="1"') +
         field("rpsPerReplica", "Sustainable RPS per replica at SLO", s.rpsPerReplica, "number", 'min="0.0001" max="1000000000" step="any"') +
-        field("annualGrowth", "Annual growth (%) - manual traffic plan or driver-based users", s.annualGrowth, "number", 'min="-90" max="1000" step="any"', "History-based forecasts learn their own trend. Use Adjust the forecast on the main page to change it.") +
-        field("monthlyLaunchRps", "Additional peak RPS added each month", s.monthlyLaunchRps, "number", 'min="0" max="1000000000" step="any"', "Separate named initiative assumption; do not include it again in organic growth.") +
-        field("headroom", "Spare serving headroom (%)", s.headroom, "number", 'min="0" max="80" step="any"') +
+        field("headroom", "Headroom (%)", s.headroom, "number", 'min="0" max="80" step="any"') +
         field("profile", "Inline performance evidence / assumptions", s.profile, "text", 'maxlength="150"') +
-        selectField("demandMethod", "Organic demand method", ["historical", "drivers"].map(v => `<option value="${v}" ${s.demandMethod === v ? "selected" : ""}>${v === "historical" ? "Historical peak + annual traffic growth" : "Business demand drivers + annual user growth"}</option>`).join("")) +
+        selectField("demandMethod", "Demand baseline", ["historical", "drivers"].map(v => `<option value="${v}" ${s.demandMethod === v ? "selected" : ""}>${v === "historical" ? "Recorded traffic history" : "Entered business demand drivers"}</option>`).join("")) +
         selectField("benchmarkId", "Reusable performance profile", `<option value="">Use inline service assumption</option>${state.benchmarks.map(b => `<option value="${esc(b.id)}" ${s.benchmarkId === b.id ? "selected" : ""}>${esc(b.name)} (${esc(skuName(b.pool))}; ${b.source})</option>`).join("")}`) +
         field("workloadKey", "Configuration key (model/version + precision + runtime + SLO)", s.workloadKey, "text", 'maxlength="150"', "Must exactly match a selected library profile. Do not reuse a key for a different configuration.") +
         field("inputTokens", "Input tokens / request (0 for non-text jobs)", s.inputTokens, "number", 'min="0" max="10000000" step="any"') +
@@ -707,8 +851,13 @@
       intro = "Additional supply is usable from this month onward. Count new usable GPUs, not orders or deliveries awaiting qualification.";
       fields = selectField("pool", "GPU SKU", poolOptions("H200-SXM-141GB")) + field("month", "Usable from month", state.startMonth, "month") +
         field("gpus", "Additional usable GPUs", 8192, "number", 'min="1" max="10000000" step="1"');
+    } else if (kind === "training-history") {
+      title = "Merge training history into this workspace?";
+      intro = "Only matching service/SKU/month training-history records will be replaced. Other history, growth inputs and allocations are preserved. Synthetic records are labeled as examples. Export a backup first if needed.";
+      editContext.imported = id;
+      fields = '<p class="description wide">Confirm using Save & recalculate, or cancel to keep your current history.</p>';
     } else if (kind === "remove-training" || kind === "remove-addition" || kind === "reset" || kind === "import") {
-      title = kind === "reset" ? "Replace workspace with NVIDIA workload demo?" : kind === "import" ? "Import and replace workspace?" : "Remove this planning input?";
+      title = kind === "reset" ? "Replace workspace with sample workload demo?" : kind === "import" ? "Import and replace workspace?" : "Remove this planning input?";
       intro = "This changes the locally saved workspace. Export your current workspace first if you need a backup. This does not change any real infrastructure.";
       if (kind === "import") editContext.imported = id;
       fields = `<p class="description wide">Confirm using Save & recalculate, or cancel to keep your current data.</p>`;
@@ -726,7 +875,9 @@
     try {
       if (kind === "service") {
         const s = {...next.services.find(s => s.id === id), ...values, id: id || `service-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`};
-        for (const key of ["gpusPerReplica", "rpsPerReplica", "annualGrowth", "monthlyLaunchRps", "headroom"]) s[key] = Number(values[key]);
+        for (const key of ["gpusPerReplica", "rpsPerReplica", "headroom"]) s[key] = Number(values[key]);
+        s.annualGrowth ??= 0;
+        s.monthlyLaunchRps ??= 0;
         s.drivers = {};
         for (const key of Object.keys(M.defaultDrivers())) {s.drivers[key] = Number(values[key]); delete s[key];}
         s.inputTokens = Number(values.inputTokens); s.outputTokens = Number(values.outputTokens);
@@ -793,7 +944,8 @@
         next.supply.additions.push({...values, gpus: Number(values.gpus)});
       } else if (kind === "remove-training") next.training = next.training.filter(t => t.id !== id);
       else if (kind === "remove-addition") next.supply.additions.splice(Number(id), 1);
-      else if (kind === "reset") next = M.demo();
+      else if (kind === "reset") {next = M.demo(); next.trainingHistory = M.demoTrainingHistory(next);}
+      else if (kind === "training-history") next = editContext.imported;
       else if (kind === "import") next = editContext.imported;
       M.validate(next);
       if (!save(next, "Workspace saved. All requirements have been recalculated.", ["reset", "import"].includes(kind))) {
@@ -820,7 +972,7 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function exportWorkspace() {
-    download("gpu-atlas-workspace.json", JSON.stringify(state, null, 2), "application/json");
+    download("capacityiq-workspace.json", JSON.stringify(state, null, 2), "application/json");
     notice("Workspace JSON exported. It includes inputs and provenance, not live infrastructure state.");
   }
   function exportRequirements() {
@@ -832,11 +984,13 @@
     notice("Forecast CSV exported with your saved adjustments and current filters.");
   }
   function exportCapacityForecast() {
-    const forecast = view === "planning" ? M.bottomUpForecast(state, serviceFilter, teamFilter, poolFilter) :
+    const forecast = view === "planning" ? {...M.plannerForecast(state, serviceFilter, teamFilter, poolFilter), computeSpecifications: M.COMPUTE_SPECS,
+      purchasePriceAssumptions: M.GPU_PURCHASE_ASSUMPTIONS,
+      normalizationBasis: "Approximate non-Tensor FP32 compute index, H100 SXM 80GB = 67 TFLOPS; not measured AI performance."} :
       M.capacityForecast(state, serviceFilter, teamFilter, poolFilter);
     download("gpu-capacity-forecast.json", JSON.stringify({planningStart: state.startMonth,
       filters: {service: serviceFilter, team: teamFilter, pool: poolFilter}, skuCatalog: M.SKU_CATALOG, ...forecast}, null, 2), "application/json");
-    notice("Forecast exported with model evidence, monthly demand, supply and your adjustments.");
+    notice("Forecast exported with the current filters, calculation inputs and projected demand.");
   }
   function exportForecasts() {
     const evidence = chosenServices().map(s => ({serviceId: s.id, serviceName: s.name,
@@ -847,7 +1001,25 @@
   document.addEventListener("click", event => {
     const button = event.target.closest("button");
     if (!button) return;
-    if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; poolFilter = "all"; render();}
+    if (button.dataset.openPlannerTab) {view = "planning"; plannerTab = button.dataset.openPlannerTab; render();}
+    else if (button.dataset.plannerTab) {plannerTab = button.dataset.plannerTab; render(); $(`#planner-tab-${plannerTab}`).focus();}
+    else if (button.dataset.historicalPace) {
+      const next = clone();
+      next.plannerGrowth = (next.plannerGrowth || []).filter(g => !(g.kind === button.dataset.historicalPace &&
+        g.serviceId === button.dataset.plannerService && g.pool === button.dataset.plannerPool));
+      save(next, "Six-month growth now follows the observed annual pace.");
+    }
+    else if (button.hasAttribute("data-training-history-demo")) {
+      openEditor("training-history", M.importTrainingHistory(state, M.demoTrainingHistory(state)));
+    }
+    else if (button.hasAttribute("data-training-history-template")) {
+      download("training-history-template.json", JSON.stringify({trainingHistory: M.demoTrainingHistory(state).filter(r => r.serviceId === state.services[0].id)}, null, 2), "application/json");
+      notice("Synthetic template exported. Replace its example values and provenance before importing real observations.");
+    }
+    else if (button.hasAttribute("data-training-history-export")) {
+      download("training-history.json", JSON.stringify({trainingHistory: state.trainingHistory || []}, null, 2), "application/json");
+    }
+    else if (button.hasAttribute("data-planning-root")) {serviceFilter = "all"; teamFilter = "all"; poolFilter = "all"; render();}
     else if (button.dataset.drillOrg) {teamFilter = button.dataset.drillOrg; serviceFilter = "all"; render();}
     else if (button.dataset.drillService) {serviceFilter = button.dataset.drillService; render();}
     else if (button.dataset.calibrateKind) openEditor(`normalize-${button.dataset.calibrateKind}`, button.dataset.calibrateId);
@@ -883,12 +1055,23 @@
     else if (plan) openEditor("training", plan.dataset.trainingRow);
   });
   document.addEventListener("input", event => {
-    if (event.target.matches("[data-service-growth]")) previewServiceGrowth(event.target, false);
+    if (event.target.matches("[data-planner-growth]")) forecastSaveStatus("Unsaved growth. Finish editing or click Save forecast.");
+    else if (event.target.matches("[data-service-growth]")) previewServiceGrowth(event.target, false);
     else if (event.target.matches("[data-training-growth]")) {
       forecastSaveStatus("Unsaved changes. Finish editing or click Save forecast.");
     }
   });
   document.addEventListener("keydown", event => {
+    if (event.target.matches("[data-planner-tab]") && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const tabs = ["overview", "inference", "training"];
+      const index = tabs.indexOf(plannerTab);
+      plannerTab = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[2] : tabs[(index + (event.key === "ArrowRight" ? 1 : 2)) % 3];
+      render(); $(`#planner-tab-${plannerTab}`).focus();
+    }
+    if (event.key === "Enter" && event.target.matches("[data-planner-growth]")) {
+      event.preventDefault(); event.target.blur();
+    }
     if (event.key === "Enter" && event.target.matches("[data-service-growth]")) {
       event.preventDefault(); event.target.blur();
     }
@@ -918,16 +1101,21 @@
     if (!id) {notice("Drop a training card from this workspace.", true); return;}
     rescheduleTraining(id, lane.dataset.trainingDrop);
   });
+  function selectForecastMonth() {
+    const input = $("#forecast-start-month");
+    if (!input.reportValidity()) {
+      forecastSaveStatus("Selected month not applied. Choose a month in the forecast window.", true);
+      notice("Forecast month was not changed. Choose a month in the displayed two-year range.", true);
+      return;
+    }
+    const next = clone();
+    next.plannerTargetMonth = input.value;
+    save(next, `Showing GPU requirements for ${fmtMonth(next.plannerTargetMonth)}. History and growth assumptions are unchanged.`);
+  }
   document.addEventListener("submit", event => {
     if (event.target.id === "forecast-start-form") {
       event.preventDefault();
-      if (!event.target.reportValidity()) return;
-      const next = clone();
-      next.startMonth = $("#forecast-start-month").value;
-      if (!save(next, `Forecast started for ${next.startMonth}. Showing all services for six months.`, false, false)) return;
-      serviceFilter = "all"; teamFilter = "all"; poolFilter = "all";
-      planningMonth = next.startMonth;
-      render();
+      selectForecastMonth();
       return;
     }
     if (event.target.id !== "forecast-controls") return;
@@ -941,7 +1129,50 @@
   });
   document.addEventListener("change", async event => {
     const input = event.target;
-    if (input.matches("[data-service-growth]")) previewServiceGrowth(input, true);
+    if (input.id === "forecast-start-month") selectForecastMonth();
+    else if (input.matches("[data-training-allocation-basis]")) {
+      const next = clone();
+      next.trainingAllocationBasis = input.value;
+      save(next, "Training allocation baseline saved. Gaps and costs updated; recorded history and inference are unchanged.");
+    }
+    else if (input.matches("[data-gpu-price]")) {
+      if (!input.checkValidity()) {
+        input.reportValidity();
+        forecastSaveStatus("Unsaved GPU price. Enter a nonnegative USD amount or leave it blank.", true);
+        notice("Purchase price was not applied. Enter a USD amount from 0 to 1,000,000,000, or leave it blank.", true);
+        return;
+      }
+      const next = clone();
+      next.gpuPurchasePrices = (next.gpuPurchasePrices || []).filter(p => p.pool !== input.dataset.gpuPrice);
+      if (input.value !== "") next.gpuPurchasePrices.push({pool: input.dataset.gpuPrice, usdPerGpu: Number(input.value)});
+      save(next, "GPU purchase price saved. Cost estimate updated; demand and allocations are unchanged.");
+    }
+    else if (input.matches("[data-planner-growth]")) {
+      if (!input.checkValidity()) {
+        input.reportValidity();
+        forecastSaveStatus("Unsaved growth. Enter a percentage from -100% to +10,000%.", true);
+        notice("Growth was not applied. Enter a valid six-month percentage.", true);
+        return;
+      }
+      const next = clone();
+      next.plannerGrowth = (next.plannerGrowth || []).filter(g => !(g.kind === input.dataset.plannerGrowth &&
+        g.serviceId === input.dataset.plannerService && g.pool === input.dataset.plannerPool));
+      next.plannerGrowth.push({kind: input.dataset.plannerGrowth, serviceId: input.dataset.plannerService,
+        pool: input.dataset.plannerPool, growthPct: Number(input.value)});
+      save(next, "Six-month growth saved. Forecast and gap recalculated; current allocations are unchanged.");
+    }
+    else if (input.id === "training-history-import") {
+      try {
+        const file = input.files[0];
+        if (!file) return;
+        if (file.size > 20 * 1024 * 1024) throw new Error("Training history file exceeds 20 MB.");
+        const data = JSON.parse(await file.text());
+        const rows = Array.isArray(data) ? data : data.trainingHistory;
+        openEditor("training-history", M.importTrainingHistory(state, rows));
+      } catch (error) {notice(`Training history import rejected: ${error.message}`, true);}
+      finally {input.value = "";}
+    }
+    else if (input.matches("[data-service-growth]")) previewServiceGrowth(input, true);
     else if (input.matches("[data-training-growth]")) {
       if (!input.checkValidity()) {
         input.reportValidity();
@@ -966,6 +1197,7 @@
     else if (input.id === "pool-filter") {poolFilter = input.value; render();}
     else if (input.id === "start-month") {
       const next = clone(); next.startMonth = input.value;
+      delete next.plannerTargetMonth;
       if (!save(next, "Planning horizon updated.")) render();
     } else if (input.id === "date-from" || input.id === "date-to") {
       const from = $("#date-from").value, to = $("#date-to").value;
@@ -986,18 +1218,18 @@
     }
   });
   $("#save-forecast").addEventListener("click", () => {
-    const invalid = [...document.querySelectorAll("[data-service-growth],[data-training-growth]")]
+    const invalid = [...document.querySelectorAll("[data-service-growth],[data-training-growth],[data-planner-growth],[data-gpu-price]")]
       .find(input => !input.checkValidity());
     if (invalid) {
       invalid.closest("details")?.setAttribute("open", "");
       invalid.reportValidity();
-      forecastSaveStatus("Unsaved changes. Correct the invalid growth input before saving.", true);
-      notice("Forecast not saved: correct the invalid growth input.", true);
+      forecastSaveStatus("Unsaved changes. Correct the invalid growth or price input before saving.", true);
+      notice("Forecast not saved: correct the invalid growth or price input.", true);
       return;
     }
-    if ($("#forecast-start-month").value !== state.startMonth) {
-      forecastSaveStatus("Selected month not applied. Click Start forecast before saving.", true);
-      notice("Click Start forecast to apply the selected month before saving.", true);
+    if ($("#forecast-start-month").value !== (state.plannerTargetMonth ?? state.startMonth)) {
+      forecastSaveStatus("Selected month not applied. Choose a valid month before saving.", true);
+      notice("Choose a month in the forecast window and click Show forecast before saving.", true);
       return;
     }
     save(clone(), "Forecast saved. Reopen this page in the same browser to continue editing.", false, false);

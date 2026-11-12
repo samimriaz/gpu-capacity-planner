@@ -1,33 +1,45 @@
-# GPU Atlas: GPU capacity forecasting
+# CapacityIQ: GPU planning and forecasting
+
+Formerly GPU Atlas. The product rename preserves existing browser-local
+workspaces and import formats; new workspace exports use `capacityiq-workspace.json`.
+
+**Live website:** https://purple-rock-02dda530f.6.azurestaticapps.net/
+
+Public Azure Static Web Apps deployment on the Free plan. The Dev Box does not
+need to stay running for visitors to use it. Each browser/origin has its own saved
+workspace; export/import JSON to transfer a local forecast to the hosted site.
 
 ## What is the goal?
 
 Help infrastructure teams answer one question:
 
-**How many GPUs will the company need over the next six months, and where will
+**How many GPUs will the company need in the selected month, and where will
 we run short?**
 
 The tool learns from each service's traffic history and forecasts GPU demand.
-Users can then adjust that forecast for launches, serving improvements, training
-plans, and new capacity.
+Users can adjust growth assumptions and serving performance, and import
+inference and training demand history.
 
 It helps them understand:
 
 - Which services and teams use GPUs today.
 - How usage and customer traffic are growing.
-- What new models teams plan to train.
-- Whether available GPUs can cover those needs.
+- How historical training demand is growing.
+- Whether current allocations cover those needs.
 
-The Capacity forecast screen separates **the base forecast** from **the forecast with your
-plans**. The **Scenario planner** adds hands-on controls: change a service's
-growth, move training between months, and see the company requirement change.
-You can inspect both physical GPUs by SKU and a common H100-equivalent index.
+The default **Capacity planner** has Overview, Inference, and Training tabs.
+It projects historical demand at an editable growth pace and compares it with
+recorded inference allocations and an explicit training allocation baseline.
+**Data & assumptions** is the only other sidebar entry;
+it contains service settings, performance evidence, history, and import/export.
+Earlier model functions and saved roadmap data are retained, but their separate
+navigation pages have been removed.
 
 The portal runs in your browser and includes a sample 200,000-GPU inventory
 and service history.
 
 [GPU SKUs](#does-it-account-for-the-gpu-sku) |
-[NVIDIA workloads](#which-nvidia-workloads-are-in-the-example) |
+[Sample workloads](#which-workloads-are-in-the-example) |
 [Data inputs](#where-would-the-data-come-from) |
 [Planning logic](#how-the-planning-logic-works) |
 [Using the portal](#what-does-the-user-do) |
@@ -35,7 +47,225 @@ and service history.
 [Run locally](#run-the-portal) |
 [Limitations](#what-it-does-not-do-yet)
 
-## Build the plan from the bottom up
+## Current capacity planner
+
+The agreed behavior is recorded in [REQUIREMENTS.md](REQUIREMENTS.md).
+
+- **Overview:** a plain-language explanation with examples; current allocated,
+  selected-month forecast, and gap in approximate H100 compute equivalents; read-only
+  inference/training tables by service, team, and exact GPU SKU.
+- **GPU requirements first:** separate Inference and Training cards show the
+  selected month's physical GPU totals and a visible exact-SKU breakdown.
+  Each workload tab repeats its own card above the chart. These mixed-SKU
+  counts are not H100 equivalents or permission to substitute GPU types.
+  Missing inputs make the affected total unavailable; known SKU needs remain
+  visible. Forecast JSON includes the same `segments` summaries.
+- **Physical summary and gap:** the top table shows inference, training and
+  combined allocation baselines, GPU requirements, net gaps and additional GPUs needed.
+  The combined requirement is the sum of inference and training physical counts.
+  H100-equivalent totals are in a separate, initially collapsed comparison.
+- **Purchase cost:** enter per-SKU USD prices in Overview or Data & assumptions.
+  Fresh workspaces and older workspaces without price settings use the
+  [SKU-specific starting estimates](#starting-purchase-price-estimates) below,
+  not a uniform GPU price. These are budgeting assumptions, not supplier quotes.
+  The complete old all-$30,000 default set upgrades once; other custom settings,
+  including zero and deliberately cleared fields, are preserved.
+  `gpuPurchasePriceVersion: 1` prevents later edits from being reinterpreted as
+  old defaults. Edit each SKU independently. Unspecified legacy variants do
+  not receive an automatic price. The one-time estimate covers GPU hardware only,
+  excluding servers, networking, tax, power and operations. It is not a quote.
+  Additional units sum `max(0, required - allocated)` for each SKU and workload
+  segment, honoring saved company allocation corrections when the segment uses
+  recorded allocations. The default training scenario instead assumes allocation
+  equals current demand. A surplus is not
+  automatically reassigned across SKUs or between inference and training.
+  Multiply these additional units by their respective prices, not by an
+  H100-equivalent gap. A missing price on any positive shortage leaves the total
+  unavailable; zero additional demand costs zero without needing a price.
+  Missing demand/allocation inputs also leave the estimate unavailable.
+  Workspace JSON stores optional `gpuPurchasePrices: [{pool, usdPerGpu}]`.
+  Forecast JSON includes `physical`, per-segment/per-SKU cost estimates, and
+  `costBasis`; the UI's forecast export also includes `purchasePriceAssumptions`
+  with sources, caveats, and the reference-check date. Saved prices round-trip
+  through workspace import/export.
+  Estimates of at least $1 billion display as, for example, **$2.99 billion**.
+  Amounts from $1 million to below $1 billion display as **$267.78 million**;
+  smaller amounts remain in dollars.
+  Hover for the exact dollar amount; calculations, price inputs, and exports
+  retain their original precision.
+- **Inference:** a chart of the preceding 12 calendar months of average
+  requests/sec and at least six projected months, extended through a later
+  selected date. GPU sizing still uses peak traffic,
+  service throughput, headroom, and the historical P90 allowance when available.
+- **Training:** the same history/projection layout, using recorded peak
+  concurrent GPU demand, not inference traffic or residual inventory.
+- **Forecast for which month?** selects a target from the planning start through
+  the same calendar month two years later, inclusive. For a December 2026 start,
+  December 2028 is selectable. Choosing December shows December's GPU requirement; choosing May
+  shows May's. The selection updates automatically and saves as
+  `plannerTargetMonth`, independently of the planning start (`startMonth`).
+  Summary cards, demand tables, SKU totals and exported results all use that
+  target. History and growth assumptions do not move when the target changes.
+  Older workspaces default to their planning start, not month six.
+- Growth inputs remain six-month percentages. Beyond six months the same pace
+  compounds: +20% per six months means +44% after twelve months and +107.36%
+  after twenty-four months. Charts and exports extend through the selected
+  month. These long-range scenarios are not validated predictions; the P90
+  heuristic is not calibrated for a two-year horizon.
+- Both demand tables show observed YoY growth and one editable **six-month
+  growth** per service/SKU. Following the annual pace means
+  `sixMonthGrowth = sqrt(1 + YoY / 100) - 1`. Thus +44% YoY means +20% over six
+  months. Overrides replace that default, not stack on top of it. Editing
+  auto-saves on blur; **Use historical pace** removes the override.
+- The default uses the latest pre-plan month's observations and matching
+  prior-year dates. Partial inference months are labeled and compared through
+  the same day. Exact YoY needs data beyond the 12 visible chart months.
+  Missing observations or a zero prior baseline mean unavailable YoY, not 0%.
+  Enter an explicit growth assumption when the default cannot be calculated.
+- Inference projects both average and peak traffic with the same growth factor.
+  Its P90 allowance applies to peak GPU sizing, not the displayed mean RPS.
+  The new planner does not stack the advanced scenario's traffic adjustment,
+  throughput adjustment, launch traffic, or scheduled training plans.
+- Training demand grows from the latest monthly peak and rounds up to whole
+  GPUs. The sum of service peaks is conservative: peaks need not coincide.
+  The default training allocation baseline equals current pre-plan GPU demand,
+  assuming no spare capacity. This is not a measured allocation or the future
+  forecast. Inference retains its existing allocation calculation.
+- The planner tabs show all services, organizations, and SKUs without a filter
+  bar or hidden scope. Data & assumptions retains its filters. The Overview is
+  read-only. Save/export include the new growth inputs and history.
+- Applicable company allocation corrections remain in company totals. They are
+  not assigned to service rows without ownership data; the UI labels this
+  difference. Training corrections are preserved but ignored in the default
+  no-spare scenario; selecting recorded allocations restores their use.
+  Scoped inference views retain their own recorded allocations.
+
+### Training allocation assumption
+
+The default `trainingAllocationBasis: "current-demand"` sets each service/SKU's
+training allocation baseline to its latest pre-plan monthly `peakGpus`. For
+example, current demand of 182 GPUs and a forecast of 185 produces a gap of
+**+3 GPUs**, even if recorded history retains 216 allocated GPUs.
+
+This assumes no spare capacity; it does not overwrite historical `allocatedGpus`
+or company-level corrections. Inference is unchanged. The baseline stays fixed
+when growth or the target month changes, and missing current demand remains
+unavailable. Zero or declining growth can still produce zero or negative gaps.
+
+Use **Training history data > Training allocation baseline** (also in
+**Data & assumptions**) to switch to `"recorded"` and use retained historical
+allocations with applicable company corrections. Older workspaces without this
+setting adopt the no-spare assumption. Exports include `trainingAllocationBasis`;
+training rows retain `recordedAllocated` alongside their selected `allocated`
+baseline and `allocationSource`. Gaps, costs and H100-equivalent summaries all use
+the selected basis, clearly labeled in the UI.
+
+### Starting purchase-price estimates
+
+References checked November 12, 2026. Rounded USD allowances, not live quotes or
+verified market averages. Price and availability depend on OEM, quantity, region,
+support, and whether hardware is sold as a card, baseboard, or complete system.
+
+| Exact SKU | Starting USD/GPU | Reference and limitation |
+|---|---:|---|
+| H100 SXM 80GB | $30,000 | [Indicative pricing guide](https://intuitionlabs.ai/articles/nvidia-ai-gpu-pricing-guide); SXM budgeting allowance, not a standalone quote. |
+| H100 PCIe 80GB | $32,000 | [Reported historical PCIe listing](https://gpuperhour.com/blog/nvidia-h100-price) of $32,411.99; discontinued, not a current offer. |
+| H200 SXM 141GB | $35,000 | [Secondary guide](https://www.mercatus-ai.com/blog/h200-price) reports $32,000-$40,000 for rare standalone SXM purchases; confirmation required. |
+| B200 SXM 180GB | $40,000 | Midpoint of an [indicative $30,000-$50,000 range](https://intuitionlabs.ai/articles/nvidia-ai-gpu-pricing-guide); not a verified standalone quote. |
+| RTX PRO 6000 Blackwell Server 96GB | $17,200 | Rounded from the [CDW Server Edition card-kit listing](https://www.cdw.com/product/nvidia-rtx-pro-6000-blackwell-server-edition-graphics-card-rtx-pro-60/8426124) at $17,158.99; not the workstation edition. |
+
+SXM systems typically require integrated baseboards and additional hardware.
+These allowances do not turn a baseboard/server price into a GPU-only quote.
+The source links describe the starting assumptions, not subsequent user edits.
+
+### Data & assumptions
+
+Expandable sections contain service ownership/SKUs, demand baselines, serving
+throughput and headroom, reusable performance profiles, daily inference records,
+and training-history import/export. Legacy annual-growth and launch fields are
+preserved in workspace data but are no longer shown in the service editor;
+current six-month growth is edited in the planner tabs.
+
+The page also contains H100 conversion assumptions, the SKU catalog, supporting
+inventory/additions, and workspace import/export and demo reset. Inventory is
+not the same as recorded allocations and does not change the new planner's
+demand-versus-allocation gap. Allocation records can be maintained with daily
+GPU-hours, training-history imports, or full workspace imports (including saved
+company corrections). Imports/exports currently use JSON, not CSV.
+
+### Approximate H100 compute index
+
+The user chose published hardware specifications rather than workload-specific
+benchmark pairs for the overview. A consistent non-Tensor **FP32 TFLOPS** basis
+is used for both allocated and forecast counts:
+
+`H100 equivalents = physical GPUs * selected SKU FP32 TFLOPS / 67`
+
+| Exact SKU | FP32 TFLOPS per GPU | Source |
+|---|---:|---|
+| H100 SXM 80GB | 67 | [NVIDIA H100 datasheet, hosted by Dell](https://i.dell.com/sites/csdocuments/App-Merchandizing_Documents/en/us/h100-gpu.pdf) |
+| H100 PCIe 80GB | 51 | [Same H100 datasheet](https://i.dell.com/sites/csdocuments/App-Merchandizing_Documents/en/us/h100-gpu.pdf) |
+| H200 SXM 141GB | 67 | [NVIDIA H200 specifications](https://www.nvidia.com/en-us/data-center/h200/) |
+| B200 SXM 180GB | 75 | [Lenovo HGX B200 product guide](https://lenovopress.lenovo.com/lp2226-thinksystem-nvidia-b200-180gb-1000w-gpu) |
+| RTX PRO 6000 Blackwell Server 96GB | 120 | [NVIDIA RTX PRO specifications](https://www.nvidia.com/en-us/data-center/rtx-pro-6000-blackwell-server-edition/) |
+
+This is **not measured inference/training performance**, a Tensor Core benchmark,
+or a hardware substitution rule. It ignores memory, bandwidth, precision, and
+interconnects. H200 can outperform H100 on memory-bound workloads despite an
+identical FP32 index. Unknown GPU variants have no guessed conversion factor.
+The older workload-matched normalization remains separate in the advanced tools.
+
+### Training history import and persistence
+
+New demo workspaces include 24 months of explicitly synthetic training history.
+Existing saved workspaces are not silently backfilled. Use **Add synthetic
+training history** in the Training tab, or import real records. The button is
+disabled when training history already exists.
+
+The tab can download a template, import history, and export it. Import accepts
+an array or an object containing a `trainingHistory` array:
+
+```json
+{
+  "trainingHistory": [
+    {
+      "serviceId": "assistant",
+      "pool": "H200-SXM-141GB",
+      "month": "2026-11",
+      "peakGpus": 512,
+      "allocatedGpus": 640,
+      "source": "user-entered"
+    }
+  ]
+}
+```
+
+Use existing service IDs and exact catalog SKUs. Counts must be nonnegative
+integers; `source` is `user-entered` or `synthetic`. Each month is one peak
+concurrent demand observation for that service/SKU. Explicit zeros are allowed;
+absent records remain missing. Import validates all records and asks for
+confirmation before merging by service/SKU/month. Matching keys are replaced;
+unrelated records are retained. The template is synthetic, not real measurement.
+
+`plannerGrowth` stores independent `{kind, serviceId, pool, growthPct}` overrides.
+It does not reinterpret existing `scenarioGrowthPct` fields. Both new fields
+round-trip through workspace JSON and browser storage. The new planner JSON export
+contains history, monthly projections, physical counts, normalized counts,
+filters, and the specification sources.
+
+### Verification
+
+```powershell
+node --test tests\planner-tabs.test.cjs tests\bottom-up-model.test.cjs tests\forecast-model.test.cjs tests\portal-model.test.cjs tests\sku-model.test.cjs
+```
+
+## Earlier bottom-up planner design (historical reference)
+
+The following interface description documents the earlier scrolling planner,
+not the current three-tab page. Its model functions and advanced tools remain
+available; section 8 of the requirements and the current planner section above
+take precedence. Scheduled-run growth and workload-matched normalization below
+must not be confused with the history-growth planner or its FP32 index.
 
 The starting point is each service, not a company-wide GPU growth target:
 
@@ -236,7 +466,7 @@ add fleet telemetry ingestion or multi-model service support.
 - The updated demo contains daily synthetic history from **December 2024 through
   November 9, 2026**, enough for all 12 prior-year comparisons. Existing saved
   workspaces are not expanded or overwritten automatically. Import more history,
-  or use **Data & assumptions > Load NVIDIA workload demo** to replace a workspace
+  or use **Data & assumptions > Load sample workload demo** to replace a workspace
   with the updated example after confirmation.
 - **Inference demand by service** is visible directly below the bottom-up demand
   chart, without opening organization drill-downs. It lists every service name,
@@ -322,7 +552,7 @@ family name. The example inventory includes:
 | B200, DGX B200 configuration | 180 GB HBM3e | SXM |
 | RTX PRO 6000 Blackwell Server Edition | 96 GB GDDR7 | PCIe |
 
-Counts are individual GPUs, not servers or racks. NVIDIA specification links
+Counts are individual GPUs, not servers or racks. Hardware specification links
 are available in **Data & assumptions**. The B200 memory entry refers to the
 [DGX B200 configuration](https://docs.nvidia.com/dgx/dgxb200-user-guide/introduction-to-dgxb200.html),
 which lists eight GPUs and 1,440 GB of total GPU memory.
@@ -342,30 +572,26 @@ The SKU identifies hardware; it does not determine serving speed by itself.
 That still needs a benchmark for the model, software setup, and response-time
 target.
 
-## Which NVIDIA workloads are in the example?
+## Which workloads are in the example?
 
-The example replaces generic search and assistant services with these areas:
+The sample uses generic workload categories:
 
-- **[Nemotron / NIM](https://www.nvidia.com/en-us/ai-data-science/foundation-models/nemotron/):**
-  language-model development and serving.
-- **[DRIVE / Alpamayo](https://blogs.nvidia.com/blog/robotaxi-leaders-full-stack-open-platform/):**
-  autonomous-driving model training, simulation, and cloud evaluation.
-  In-vehicle inference on DRIVE hardware is a separate capacity problem.
-- **[Isaac / GR00T](https://www.nvidia.com/en-us/industries/robotics/isaac-groot/):**
-  robotics model development, simulation, and policy evaluation. On-robot
-  Jetson inference is separate from the data-center fleet.
-- **[Cosmos](https://www.nvidia.com/en-us/ai/cosmos/):**
-  world models, synthetic video generation, and physical-AI data.
-- **[Omniverse](https://www.nvidia.com/en-us/omniverse/):**
-  digital twins, rendering, and simulation.
-- **[BioNeMo](https://www.nvidia.com/en-us/clara/bionemo/):**
-  biomolecular model development and inference.
-- **[ChipNeMo](https://blogs.nvidia.com/blog/llm-semiconductors-chip-nemo/):**
-  NVIDIA's published research on language models for chip-design assistance.
+- **Language models:** model development and serving.
+- **Autonomous systems:** driving-model training, simulation and cloud evaluation.
+- **Robotics:** model development, simulation and policy evaluation.
+- **Video generation:** world models and synthetic video generation.
+- **Rendering and simulation:** digital twins, rendering and physics.
+- **Scientific models:** biomolecular development and inference.
+- **Engineering assistants:** chip-design and engineering assistance.
 
-Public sources do not show how NVIDIA splits its own GPU usage across these
-areas, so this is not a spending ranking. The example's traffic, GPU counts,
-and performance inputs are illustrative planning data.
+On-device inference is separate from the data-center fleet. These examples do
+not represent any company's actual usage. Traffic, GPU counts, and performance
+inputs are illustrative planning data.
+
+Original branded demo service/profile names are upgraded to generic labels on
+load/import without resetting inputs. Customized names, IDs, history, allocations,
+growth and hardware identifiers are preserved. Normal saving/export persists the
+generic labels. Hardware specification URLs remain factual source references.
 
 For non-text services, a request means one fixed, benchmarked operation—for
 example, a render, a video generation, or a policy evaluation. Request rates
@@ -373,7 +599,7 @@ from different kinds of work are not interchangeable. The forecast converts
 each service's own request demand into GPUs before adding capacity requirements.
 
 The training examples are dense language-model experiments. The dense training
-formula below is not applied to every Cosmos, robotics, or simulation workload.
+formula below is not applied to every video, robotics, or simulation workload.
 
 ## How would it work?
 
@@ -460,27 +686,29 @@ live updates and historical ownership tracking are not.
 The data tells us what happened. Teams still need to tell us what they intend
 to do next.
 
-1. **Open Scenario planner.** It starts with a six-month prediction learned
-   from service history. Adjust service growth and drill into an organization
-   or model. Filter by service, organization, or GPU SKU.
-2. **Adjust the prediction.** Enter traffic above or below the forecast, or a
-   change in serving throughput. Click **Update forecast** to save and compare.
-   The base forecast stays unchanged.
-3. **Set service plans.** Add launch traffic and serving test results. A new
-   service without enough history can use an explicit plan based on users.
-4. **Add training plans.** In **Training roadmap**, enter model size, training
-   data size, timing, hardware assumptions, and the number of simultaneous runs.
-5. **Update supply.** In **Data & assumptions**, enter inventory, unavailable
-   GPUs, reserves, and additions.
-6. **Review shortages.** Back in **Capacity forecast**, compare the base forecast,
-   your plan, and supply. Turn launches or training on/off to see their effect.
-   Export the forecast as JSON or the monthly numbers as CSV.
+1. **Open Capacity planner.** Choose the month whose GPU need you want to see.
+   The tabs include all services, teams, and GPU SKUs.
+2. **Review Overview.** Read the explanation, normalized summary, and physical
+   service/team/SKU needs.
+3. **Review Inference.** Compare historical throughput with its projection.
+   Keep the historical growth pace or enter one six-month growth percentage.
+4. **Review Training.** Import training history or use the labeled demo data.
+   Adjust training growth separately.
+5. **Save or export.** Edits save in the browser. Export workspace JSON for a
+   backup; export forecast JSON for the current results.
+6. **Maintain Data & assumptions.** Configure services and performance profiles,
+   update history/allocation inputs, or import/export the workspace. The planning
+   start is available here; changing it resets the selected forecast month.
 
-For example, a planner could move a training plan from March to April or add
-GPUs starting in February and see the effect. The portal recalculates the result;
-it does not make those operational changes itself.
+For example, a planner can change a service's six-month growth assumption and
+compare GPU need for different target months. The portal recalculates estimates;
+it does not reserve GPUs or make operational changes.
 
 ## How the planning logic works
+
+This section documents historical models and UI workflows retained in the code,
+not pages available in the current navigation. For the new
+history-growth planner, see [Current capacity planner](#current-capacity-planner).
 
 ### A. Measure current usage
 
@@ -511,7 +739,7 @@ The portal first estimates traffic, then converts that traffic into GPUs.
 1. Take up to 364 consecutive daily records (52 weeks) before planning starts.
    At least 42 are needed; missing days are not filled with zero.
 2. Try two methods: a recent average and a straight-line trend fitted to weekly
-   averages. Both also learn which weekdays tend to be busier.
+   averages. Only the linear trend learns which weekdays tend to be busier.
 3. Keep the final 14 days aside. Predict those days using only the earlier data
    and choose the method with the smaller average error. These are multi-day
    predictions, not predictions updated with each day's actual result.
@@ -563,13 +791,13 @@ forecast.
 ```text
 GPU groups needed =
     round up(peak requests per second /
-             (requests per second per group * usable share of serving capacity))
+             (requests per second per group * 0.8))
 
 GPUs needed = GPU groups needed * GPUs per group
 ```
 
-A group is one copy of the serving model, which may need several GPUs.
-For 20% spare serving capacity, use 0.8 as the usable share.
+A group is one serving replica (one running instance of the model), which may need several GPUs.
+For 20% headroom, each group is planned at 80% of its measured requests per second, so use 0.8.
 
 **Example:** suppose the traffic forecast predicts a peak of 126,000 requests
 per second. If an eight-GPU group handles 40 requests per second, with 20% capacity kept
@@ -655,6 +883,8 @@ model comparison described above.
 
 ## Screenshots
 
+These screenshots show earlier workflows, not the current two-entry navigation.
+
 **Interactive scenario planner:** edit a service's growth and compare physical
 and H100-equivalent demand.
 
@@ -673,7 +903,8 @@ and H100-equivalent demand.
 
 ![History-based GPU forecast with editable scenario controls](docs/screenshots/capacity-forecast.png)
 
-The supporting pages use the same NVIDIA workload example and exact GPU SKUs.
+The historical screenshots use older demo labels; the current sample has generic
+workload names and exact GPU SKUs.
 
 **Consumption:** see which services use GPUs and how usage changes.
 
@@ -701,6 +932,48 @@ The supporting pages use the same NVIDIA workload example and exact GPU SKUs.
 
 </details>
 
+## Azure deployment
+
+Deployed November 12, 2026:
+
+- Static Web App: `capacityiq`
+- Resource group: `rg-capacityiq-demo`
+- Region: East US 2
+- Plan: Free
+- Production URL: https://purple-rock-02dda530f.6.azurestaticapps.net/
+- Published content: only the four files in [portal](portal).
+- No backend, database, paid services, custom domain, or automated Git deployment.
+
+The site is public and does not require sign-in. Browser-local data is not
+uploaded or synchronized. The approved CSV backend remains unimplemented.
+Local changes require a new deployment; they are not published automatically.
+
+To redeploy, run the following **from the repository root, not from inside
+`portal`**. The deployment client requires its working directory to be outside
+the artifact folder. The isolated Azure CLI profile preserves other Azure logins.
+If its session expires, use `az login --use-device-code` after setting
+`AZURE_CONFIG_DIR`, and select the intended subscription before deploying.
+
+```powershell
+$env:AZURE_CONFIG_DIR = Join-Path $env:LOCALAPPDATA 'CapacityIQ\AzureCLI'
+$env:SWA_CLI_DEPLOYMENT_TOKEN = az staticwebapp secrets list `
+  --name capacityiq --resource-group rg-capacityiq-demo `
+  --query properties.apiKey --output tsv
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($env:SWA_CLI_DEPLOYMENT_TOKEN)) {
+  throw 'Unable to retrieve deployment credential.'
+}
+try {
+  npx.cmd --yes --package=@azure/static-web-apps-cli@2.1.0 swa deploy .\portal `
+    --env production --no-use-keychain
+  if ($LASTEXITCODE -ne 0) { throw 'Deployment failed.' }
+} finally {
+  Remove-Item Env:\SWA_CLI_DEPLOYMENT_TOKEN -ErrorAction SilentlyContinue
+}
+```
+
+Never print, commit, or share deployment tokens. After publishing, check the
+public website and its assets before sharing the updated result.
+
 ## Run the portal
 
 Open [portal/index.html](portal/index.html) in a browser. On Windows:
@@ -709,12 +982,12 @@ Open [portal/index.html](portal/index.html) in a browser. On Windows:
 Start-Process .\portal\index.html
 ```
 
-There is no server, build step, or package installation.
+No backend server, build step, or package installation is needed to run locally.
 Edits save in the browser's local storage. Export workspace JSON to keep a copy
 or move it to another browser. Import replaces the workspace after validation
 and confirmation. Version-1 and version-2 workspaces upgrade to version 3 while
 preserving their inputs. Existing family-level counts remain unspecified
-variants; loading the new NVIDIA workload demo requires explicit confirmation
+variants; loading the sample workload demo requires explicit confirmation
 in **Data & assumptions**. Forecast adjustments are included in workspace exports.
 The `pool` field now holds the SKU ID. Monthly CSV also includes the SKU name,
 memory, and form factor; forecast JSON includes the SKU catalog.

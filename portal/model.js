@@ -11,16 +11,50 @@
   ];
   const POOLS = SKU_CATALOG.map(s => s.id);
   const WORKLOAD_AREAS = [
-    {name: "Nemotron / NIM", description: "Language-model training, evaluation and inference. The demo tracks model-serving requests.", source: "https://www.nvidia.com/en-us/ai-data-science/foundation-models/nemotron/"},
-    {name: "DRIVE / Alpamayo", description: "Autonomous-driving model development and cloud evaluation. Training and simulation are data-center work; in-vehicle DRIVE inference is separate.", source: "https://blogs.nvidia.com/blog/robotaxi-leaders-full-stack-open-platform/"},
-    {name: "Isaac / GR00T", description: "Robot-model development, simulation and policy evaluation. On-robot Jetson inference is separate from the server fleet.", source: "https://developer.nvidia.com/isaac/gr00t"},
-    {name: "Cosmos", description: "World models, synthetic video generation and physical-AI evaluation.", source: "https://www.nvidia.com/en-us/ai/cosmos/"},
-    {name: "Omniverse", description: "Rendering, physics, digital twins and synthetic sensor data.", source: "https://www.nvidia.com/en-us/omniverse/"},
-    {name: "BioNeMo", description: "Biomolecular model training, protein design and drug-discovery inference.", source: "https://www.nvidia.com/en-us/clara/bionemo/"},
-    {name: "ChipNeMo", description: "NVIDIA's published research on language models for chip-design assistance.", source: "https://blogs.nvidia.com/blog/llm-semiconductors-chip-nemo/"},
+    {name: "Language models", description: "Language-model training, evaluation and inference."},
+    {name: "Autonomous systems", description: "Driving-model development, simulation and cloud evaluation. In-vehicle inference is separate."},
+    {name: "Robotics", description: "Robot-model development, simulation and policy evaluation. On-device inference is separate."},
+    {name: "Video generation", description: "World models, synthetic video generation and evaluation."},
+    {name: "Rendering and simulation", description: "Rendering, physics, digital twins and synthetic sensor data."},
+    {name: "Scientific models", description: "Biomolecular model training, protein design and scientific inference."},
+    {name: "Engineering assistants", description: "Language models for chip design and engineering assistance."},
   ];
+  const DEMO_SERVICE_LABELS = {
+    assistant: {previous: "Nemotron / NIM inference", name: "Language model inference"},
+    search: {previous: "BioNeMo model inference", name: "Scientific model inference"},
+    copilot: {previous: "Cosmos video generation", name: "Video generation"},
+    vision: {previous: "DRIVE / Alpamayo cloud evaluation", name: "Autonomous driving evaluation"},
+    recommend: {previous: "Omniverse render requests", name: "Rendering and simulation"},
+    agents: {previous: "Isaac / GR00T policy evaluation", name: "Robotics policy evaluation"},
+    "chip-design": {previous: "ChipNeMo design assistance", name: "Chip design assistance"},
+  };
   const DAY = 86400000;
   const NORMALIZATION_REFERENCE = "H100-SXM-80GB";
+  const PLANNER_MAX_MONTHS_AHEAD = 24;
+  const GPU_PURCHASE_ASSUMPTIONS = [
+    {pool: "H100-SXM-80GB", usdPerGpu: 30000, checkedOn: "2026-11-12",
+      source: "https://intuitionlabs.ai/articles/nvidia-ai-gpu-pricing-guide",
+      basis: "Indicative H100 pricing guide; $30,000 SXM budgeting allowance, not a standalone supplier quote."},
+    {pool: "H100-PCIE-80GB", usdPerGpu: 32000, checkedOn: "2026-11-12",
+      source: "https://gpuperhour.com/blog/nvidia-h100-price",
+      basis: "Rounded from a reported $32,411.99 historical PCIe listing. Listing was discontinued; this is not a current offer."},
+    {pool: "H200-SXM-141GB", usdPerGpu: 35000, checkedOn: "2026-11-12",
+      source: "https://www.mercatus-ai.com/blog/h200-price",
+      basis: "Planning allowance within a secondary guide's $32,000-$40,000 standalone SXM range; availability and quotes require confirmation."},
+    {pool: "B200-SXM-180GB", usdPerGpu: 40000, checkedOn: "2026-11-12",
+      source: "https://intuitionlabs.ai/articles/nvidia-ai-gpu-pricing-guide",
+      basis: "Midpoint of an indicative $30,000-$50,000 B200 range, not a verified standalone quote. SXM procurement normally requires integrated systems."},
+    {pool: "RTX-PRO-6000-BW-SERVER-96GB", usdPerGpu: 17200, checkedOn: "2026-11-12",
+      source: "https://www.cdw.com/product/nvidia-rtx-pro-6000-blackwell-server-edition-graphics-card-rtx-pro-60/8426124",
+      basis: "Rounded from a $17,158.99 advertised Server Edition card-kit listing; not the workstation edition. Confirm availability and quote."},
+  ];
+  const COMPUTE_SPECS = [
+    {pool: "H100-SXM-80GB", fp32: 67, source: "https://i.dell.com/sites/csdocuments/App-Merchandizing_Documents/en/us/h100-gpu.pdf"},
+    {pool: "H100-PCIE-80GB", fp32: 51, source: "https://i.dell.com/sites/csdocuments/App-Merchandizing_Documents/en/us/h100-gpu.pdf"},
+    {pool: "H200-SXM-141GB", fp32: 67, source: "https://www.nvidia.com/en-us/data-center/h200/"},
+    {pool: "B200-SXM-180GB", fp32: 75, source: "https://lenovopress.lenovo.com/lp2226-thinksystem-nvidia-b200-180gb-1000w-gpu"},
+    {pool: "RTX-PRO-6000-BW-SERVER-96GB", fp32: 120, source: "https://www.nvidia.com/en-us/data-center/rtx-pro-6000-blackwell-server-edition/"},
+  ];
   const fail = (message) => { throw new Error(message); };
   function number(value, name, min = 0, max = 1e15, integer = false) {
     if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
@@ -83,7 +117,30 @@
       for (const p of ["H100", "H200", "B200"]) {
         if (!state.supply[p]) fail(`Missing legacy supply for ${p}.`);
       }
-      return {...state, version: 3, supply: {...emptySupply(), ...state.supply}};
+      state = {...state, version: 3, supply: {...emptySupply(), ...state.supply}};
+    }
+    if (state?.version === 3 && Array.isArray(state.services) && Array.isArray(state.benchmarks)) {
+      state = {...state, services: state.services.map(s => {
+        const label = DEMO_SERVICE_LABELS[s.id];
+        return label && s.name === label.previous ? {...s, name: label.name} : s;
+      }), benchmarks: state.benchmarks.map(b => {
+        const label = Object.entries(DEMO_SERVICE_LABELS).find(([id]) => b.id === `profile-${id}`)?.[1];
+        return label && b.source === "synthetic" && b.name === `${label.previous} demo profile` ?
+          {...b, name: `${label.name} demo profile`} : b;
+      })};
+    }
+    if (state?.version === 3) {
+      if (state.trainingAllocationBasis === undefined) state = {...state, trainingAllocationBasis: "current-demand"};
+      const defaults = GPU_PURCHASE_ASSUMPTIONS.map(({pool, usdPerGpu}) => ({pool, usdPerGpu}));
+      if (state.gpuPurchasePrices === undefined) {
+        state = {...state, gpuPurchasePrices: defaults,
+          gpuPurchasePriceVersion: state.gpuPurchasePriceVersion === undefined ? 1 : state.gpuPurchasePriceVersion};
+      } else if (Array.isArray(state.gpuPurchasePrices) && state.gpuPurchasePriceVersion === undefined) {
+        const uniformLegacyDefaults = state.gpuPurchasePrices.length === defaults.length &&
+          defaults.every(d => state.gpuPurchasePrices.some(p => p.pool === d.pool && p.usdPerGpu === 30000));
+        state = {...state, gpuPurchasePrices: uniformLegacyDefaults ? defaults : state.gpuPurchasePrices,
+          gpuPurchasePriceVersion: 1};
+      }
     }
     return state;
   }
@@ -157,6 +214,8 @@
     state = upgrade(state);
     if (!state || state.version !== 3) fail("Unsupported workspace version.");
     month(state.startMonth);
+    if (!["current-demand", "recorded"].includes(state.trainingAllocationBasis)) fail("Choose a supported training allocation basis.");
+    forecastTargetMonth(state);
     if (state.forecast !== undefined) forecastCheck(state.forecast);
     if (!Array.isArray(state.services) || !state.services.length || state.services.length > 1000) fail("Workspace requires 1–1,000 services.");
     if (!Array.isArray(state.records) || state.records.length > 100000) fail("At most 100,000 consumption rows are supported.");
@@ -181,6 +240,31 @@
       if (t.normalization !== undefined) normalizationCheck(t.normalization);
     });
     if (new Set(state.training.map(t => t.id)).size !== state.training.length) fail("Training plan IDs must be unique.");
+    if (state.trainingHistory !== undefined) trainingHistoryCheck(state.trainingHistory, state.services);
+    if (state.gpuPurchasePriceVersion !== undefined) number(state.gpuPurchasePriceVersion, "GPU purchase price version", 1, 1, true);
+    if (state.gpuPurchasePrices !== undefined) {
+      if (!Array.isArray(state.gpuPurchasePrices) || state.gpuPurchasePrices.length > POOLS.length) fail("GPU purchase prices must be a per-SKU list.");
+      const seen = new Set();
+      for (const price of state.gpuPurchasePrices) {
+        pool(price.pool);
+        number(price.usdPerGpu, "GPU purchase price (USD)", 0, 1e9);
+        if (seen.has(price.pool)) fail("Duplicate GPU purchase price for SKU.");
+        seen.add(price.pool);
+      }
+    }
+    if (state.plannerGrowth !== undefined) {
+      if (!Array.isArray(state.plannerGrowth) || state.plannerGrowth.length > 20000) fail("Too many planner growth overrides.");
+      const seen = new Set();
+      for (const row of state.plannerGrowth) {
+        if (!["inference", "training"].includes(row.kind)) fail("Unknown planner growth segment.");
+        if (!state.services.some(s => s.id === row.serviceId)) fail("Planner growth references an unknown service.");
+        pool(row.pool);
+        number(row.growthPct, "Six-month growth %", -100, 10000);
+        const key = JSON.stringify([row.kind, row.serviceId, row.pool]);
+        if (seen.has(key)) fail("Duplicate planner growth override.");
+        seen.add(key);
+      }
+    }
     if (!state.supply || !Array.isArray(state.supply.additions)) fail("Supply inputs are required.");
     if (Object.keys(state.supply).some(p => p !== "additions" && !POOLS.includes(p))) fail("Supply references an unknown GPU SKU.");
     for (const p of POOLS) {
@@ -775,15 +859,238 @@
     if (!complete(current, start, end) || !complete(old, oldStart, oldEnd)) return null;
     return growth(current.reduce((n, r) => n + r.gpuHours, 0), old.filter(r => serviceIds.includes(r.serviceId)).reduce((n, r) => n + r.gpuHours, 0));
   }
+  function trainingHistoryCheck(rows, services) {
+    if (!Array.isArray(rows) || rows.length > 100000) fail("Training history must be an array of at most 100,000 rows.");
+    const seen = new Set();
+    for (const row of rows) {
+      if (!services.some(s => s.id === row.serviceId)) fail("Training history references an unknown service.");
+      pool(row.pool); month(row.month);
+      number(row.peakGpus, "Historical peak training GPUs", 0, 1e9, true);
+      number(row.allocatedGpus, "Historical allocated training GPUs", 0, 1e9, true);
+      if (!["synthetic", "user-entered"].includes(row.source)) fail("Unknown training history provenance.");
+      const key = JSON.stringify([row.serviceId, row.pool, row.month]);
+      if (seen.has(key)) fail("Only one training history row per service, SKU and month is allowed.");
+      seen.add(key);
+    }
+    return rows;
+  }
+  function importTrainingHistory(state, rows) {
+    trainingHistoryCheck(rows, state.services);
+    if (!rows.length) fail("Training history import is empty.");
+    const key = row => JSON.stringify([row.serviceId, row.pool, row.month]);
+    const merged = new Map((state.trainingHistory || []).map(row => [key(row), row]));
+    for (const row of rows) merged.set(key(row), row);
+    return validate({...state, trainingHistory: [...merged.values()]});
+  }
+  function shiftedMonth(value, offset) {
+    const [year, m] = value.split("-").map(Number);
+    return new Date(Date.UTC(year, m - 1 + offset, 1)).toISOString().slice(0, 7);
+  }
+  function demoTrainingHistory(state) {
+    const groups = new Map(state.services.map(s => [JSON.stringify([s.id, s.pool]), {serviceId: s.id, pool: s.pool}]));
+    state.training.forEach(t => groups.set(JSON.stringify([t.serviceId, t.pool]), {serviceId: t.serviceId, pool: t.pool}));
+    return [...groups.values()].flatMap((group, i) => months(shiftedMonth(state.startMonth, -24), 24).map((m, n) => {
+      const peakGpus = Math.ceil((128 + i * 64) * (1.2 + i * 0.04) ** (n / 12));
+      return {...group, month: m, peakGpus, allocatedGpus: Math.ceil(peakGpus * 1.15 / 8) * 8, source: "synthetic"};
+    }));
+  }
+  function computeEquivalent(gpus, sku) {
+    const spec = COMPUTE_SPECS.find(s => s.pool === sku);
+    return gpus === null || !spec ? null : gpus * spec.fp32 / 67;
+  }
+  const completeSum = values => values.every(Number.isFinite) ? values.reduce((n, v) => n + v, 0) : null;
+  // Avoid rounding an exact GPU boundary up because of floating-point noise.
+  const plannerCeil = value => value === 0 ? 0 : Math.ceil(value - Number.EPSILON * Math.abs(value) * 4);
+  function forecastTargetMonth(state) {
+    const target = state.plannerTargetMonth ?? state.startMonth;
+    month(target);
+    const window = months(state.startMonth, PLANNER_MAX_MONTHS_AHEAD + 1);
+    if (!window.includes(target)) {
+      fail(`Choose a forecast month from ${state.startMonth} through ${window.at(-1)}.`);
+    }
+    return target;
+  }
+  function plannerForecast(state, selectedId = "all", selectedTeam = "all", selectedPool = "all") {
+    const trainingAllocationBasis = state.trainingAllocationBasis ?? "current-demand";
+    const assumeTrainingDemand = trainingAllocationBasis === "current-demand";
+    const owners = state.services.filter(s => (selectedId === "all" || s.id === selectedId) &&
+      (selectedTeam === "all" || s.team === selectedTeam));
+    const historicalMonths = months(shiftedMonth(state.startMonth, -12), 12);
+    const latestMonth = historicalMonths.at(-1), previousYear = shiftedMonth(latestMonth, -12);
+    const targetMonth = forecastTargetMonth(state);
+    const window = months(state.startMonth, PLANNER_MAX_MONTHS_AHEAD + 1);
+    const targetIndex = window.indexOf(targetMonth);
+    const futureMonths = window.slice(0, Math.max(6, targetIndex + 1));
+    const allocations = recordedAllocations(state, owners.map(s => s.id));
+    const demandRows = new Map();
+    for (const row of state.records) {
+      if (!demandRows.has(row.serviceId)) demandRows.set(row.serviceId, new Map());
+      const buckets = demandRows.get(row.serviceId), m = row.date.slice(0, 7);
+      if (!buckets.has(m)) buckets.set(m, []);
+      buckets.get(m).push(row);
+    }
+    const monthTraffic = (serviceId, m, through = null) => {
+      const rows = demandRows.get(serviceId)?.get(m) || [];
+      const calendarDays = new Date(Date.parse(`${shiftedMonth(m, 1)}-01`) - DAY).getUTCDate();
+      const lastDay = rows.length ? Math.max(...rows.map(r => +r.date.slice(8))) : 0;
+      const days = through ?? (m === latestMonth ? lastDay : calendarDays);
+      const selected = rows.filter(r => +r.date.slice(8) <= days);
+      const complete = days > 0 && selected.length === days;
+      return {month: m, value: complete ? selected.reduce((n, r) => n + r.requests, 0) / (days * 86400) : null,
+        peak: complete ? Math.max(...selected.map(r => r.peakRps)) : null, days, observedDays: selected.length,
+        partial: days < calendarDays, synthetic: selected.some(r => r.source === "synthetic")};
+    };
+    const applyGrowth = row => {
+      row.yoyPct = row.current === null || row.previous === null ? null : growth(row.current, row.previous);
+      row.suggestedGrowthPct = row.yoyPct === null ? null : (Math.sqrt(1 + row.yoyPct / 100) - 1) * 100;
+      const override = state.plannerGrowth?.find(g => g.kind === row.kind && g.serviceId === row.serviceId && g.pool === row.pool);
+      row.growthPct = override ? override.growthPct : row.suggestedGrowthPct;
+      row.manual = Boolean(override);
+      row.reason = row.current === null ? "Latest pre-plan month is missing or incomplete." :
+        row.growthPct === null ? "YoY unavailable: matching prior-year history and a nonzero baseline are required. Enter six-month growth." : "";
+      return row;
+    };
+    const inferenceRows = owners.filter(s => selectedPool === "all" || s.pool === selectedPool).map(s => {
+      const history = historicalMonths.map(m => monthTraffic(s.id, m));
+      const current = history.at(-1), previous = monthTraffic(s.id, previousYear, current.days);
+      const drivers = s.demandMethod === "drivers";
+      const driverAverage = drivers ? driverRps(s.drivers, 0, 0) / s.drivers.peakToAverage : null;
+      const row = applyGrowth({kind: "inference", serviceId: s.id, name: s.name, team: s.team, pool: s.pool,
+        history, current: drivers ? driverAverage : current.value, previous: drivers ? null : previous.value,
+        allocated: allocations.get(s.id) ?? null, baselineMonth: latestMonth,
+        synthetic: history.some(h => h.synthetic), drivers});
+      const performance = profileFor(state, s);
+      const evidence = trafficForecast(state, s.id);
+      row.future = futureMonths.map((m, i) => {
+        const factor = row.growthPct === null ? null : (1 + row.growthPct / 100) ** ((i + 1) / 6);
+        const value = row.current === null || factor === null ? null : row.current * factor;
+        const baselinePeak = drivers ? driverAverage * s.drivers.peakToAverage : current.peak;
+        const peak = baselinePeak === null || factor === null ? null : baselinePeak * factor;
+        const size = rps => {
+          if (rps === null || !performance.available) return null;
+          const count = plannerCeil(rps / (performance.rpsPerReplica * (1 - s.headroom / 100))) * performance.gpusPerReplica;
+          return Number.isSafeInteger(count) ? count : null;
+        };
+        return {month: m, value, peak, gpusP50: size(peak), gpus: size(peak === null ? null : peak * p90Multiplier(evidence, i))};
+      });
+      if (!performance.available) row.reason = performance.reason;
+      else if (!row.reason && row.future.some(m => m.gpus === null)) row.reason = "GPU count exceeds the supported range.";
+      return row;
+    });
+    const trainingGroups = new Map();
+    const addGroup = (serviceId, p) => {
+      const owner = owners.find(s => s.id === serviceId);
+      if (owner) {
+        trainingGroups.set(JSON.stringify([serviceId, p]), {owner, pool: p});
+      }
+    };
+    (state.trainingHistory || []).forEach(r => addGroup(r.serviceId, r.pool));
+    state.training.forEach(t => addGroup(t.serviceId, t.pool));
+    for (const s of owners) {
+      if (![...trainingGroups.values()].some(g => g.owner.id === s.id)) addGroup(s.id, s.pool);
+    }
+    const trainingRows = [...trainingGroups.values()].filter(g => selectedPool === "all" || g.pool === selectedPool).map(({owner: s, pool: p}) => {
+      const rows = (state.trainingHistory || []).filter(r => r.serviceId === s.id && r.pool === p);
+      const byMonth = new Map(rows.map(r => [r.month, r]));
+      const current = byMonth.get(latestMonth), previous = byMonth.get(previousYear);
+      const before = rows.filter(r => r.month < state.startMonth);
+      const recordedAllocated = before.length ? Math.max(...before.map(r => r.allocatedGpus)) : null;
+      const row = applyGrowth({kind: "training", serviceId: s.id, name: s.name, team: s.team, pool: p,
+        history: historicalMonths.map(m => ({month: m, value: byMonth.get(m)?.peakGpus ?? null})),
+        current: current?.peakGpus ?? null, previous: previous?.peakGpus ?? null,
+        allocated: assumeTrainingDemand ? current?.peakGpus ?? null : recordedAllocated,
+        recordedAllocated, allocationSource: assumeTrainingDemand ? "assumed-current-demand" : "recorded-allocation",
+        baselineMonth: latestMonth, synthetic: before.some(r => r.source === "synthetic")});
+      row.future = futureMonths.map((m, i) => {
+        const estimate = row.current === null || row.growthPct === null ? null :
+          plannerCeil(row.current * (1 + row.growthPct / 100) ** ((i + 1) / 6));
+        const gpus = Number.isSafeInteger(estimate) ? estimate : null;
+        return {month: m, value: gpus, gpus, gpusP50: gpus};
+      });
+      if (!row.reason && row.future.some(m => m.gpus === null)) row.reason = "GPU count exceeds the supported range.";
+      return row;
+    });
+    const rows = [...inferenceRows, ...trainingRows];
+    for (const row of rows) {
+      row.selected = row.future[targetIndex];
+      row.forecast = row.selected.gpus;
+      row.normalizedAllocated = computeEquivalent(row.allocated, row.pool);
+      row.normalizedForecast = computeEquivalent(row.forecast, row.pool);
+      row.gap = row.allocated === null || row.forecast === null ? null : row.forecast - row.allocated;
+    }
+    const totals = items => {
+      const result = Object.fromEntries(["allocated", "forecast", "gap", "additionalGpus", "costUsd"]
+        .map(key => [key, completeSum(items.map(item => item[key]))]));
+      result.costReason = [...new Set(items.map(item => item.costReason).filter(Boolean))].join(" ");
+      if (result.costUsd !== null && result.costUsd > Number.MAX_SAFE_INTEGER / 100) {
+        result.costUsd = null;
+        result.costReason = "Cost exceeds supported currency precision.";
+      }
+      return result;
+    };
+    const poolSegments = [...new Set(rows.map(r => r.pool))].map(p => {
+      const selected = rows.filter(r => r.pool === p);
+      const current = segmentCapacity(state, p, selectedId, selectedTeam);
+      const entered = ["inference", "training"].filter(kind =>
+        !(kind === "training" && assumeTrainingDemand) && current[`${kind}Source`] === "entered-allocation");
+      const unitPriceUsd = state.gpuPurchasePrices?.find(price => price.pool === p)?.usdPerGpu ?? null;
+      const kinds = Object.fromEntries(["inference", "training"].map(kind => {
+        const items = selected.filter(r => r.kind === kind);
+        const allocated = entered.includes(kind) ? current[kind] : completeSum(items.map(r => r.allocated));
+        const forecast = completeSum(items.map(r => r.forecast));
+        const gap = allocated === null || forecast === null ? null : forecast - allocated;
+        const additionalGpus = gap === null ? null : Math.max(0, gap);
+        let costReason = additionalGpus === null ? "Demand or allocation inputs are missing." :
+          additionalGpus > 0 && unitPriceUsd === null ? "Enter a purchase price for this SKU." : "";
+        let costUsd = costReason ? null : additionalGpus === 0 ? 0 : additionalGpus * unitPriceUsd;
+        if (costUsd !== null && (!Number.isFinite(costUsd) || costUsd > Number.MAX_SAFE_INTEGER / 100)) {
+          costUsd = null;
+          costReason = "Cost exceeds supported currency precision.";
+        }
+        return [kind, {pool: p, allocated, forecast, gap, additionalGpus, unitPriceUsd, costUsd, costReason}];
+      }));
+      return {pool: p, unitPriceUsd, allocationAdjusted: entered.length > 0,
+        trainingOverrideIgnored: assumeTrainingDemand && current.trainingSource === "entered-allocation", ...kinds};
+    });
+    const pools = poolSegments.map(p => {
+      const total = totals([p.inference, p.training]);
+      return {...total, pool: p.pool, unitPriceUsd: p.unitPriceUsd, allocationAdjusted: p.allocationAdjusted,
+        trainingOverrideIgnored: p.trainingOverrideIgnored,
+        normalizedAllocated: computeEquivalent(total.allocated, p.pool), normalizedForecast: computeEquivalent(total.forecast, p.pool)};
+    });
+    const physical = totals(pools);
+    const normalizedAllocated = completeSum(pools.map(p => p.normalizedAllocated));
+    const normalizedForecast = completeSum(pools.map(p => p.normalizedForecast));
+    const segments = Object.fromEntries(["inference", "training"].map(kind => {
+      const selected = rows.filter(r => r.kind === kind);
+      const items = poolSegments.map(p => p[kind]);
+      return [kind, {
+        ...totals(items),
+        missing: selected.filter(r => r.forecast === null).length,
+        pools: items,
+      }];
+    }));
+    const series = kind => {
+      const items = rows.filter(r => r.kind === kind);
+      return [...historicalMonths.map((m, i) => ({month: m, value: items.length ? completeSum(items.map(r => r.history[i].value)) : null})),
+        ...futureMonths.map((m, i) => ({month: m, value: items.length ? completeSum(items.map(r => r.future[i].value)) : null}))];
+    };
+    return {rows, pools, segments, physical, trainingAllocationBasis, costBasis: {currency: "USD", type: "one-time GPU hardware purchase",
+      allocationPolicy: "Retain allocations; positive shortages by SKU and workload segment are not offset by surpluses."},
+      inferenceRows, trainingRows, historicalMonths, futureMonths, targetMonth,
+      series: {inference: series("inference"), training: series("training")},
+      normalizedAllocated, normalizedForecast,
+      normalizedGap: normalizedAllocated === null || normalizedForecast === null ? null : normalizedForecast - normalizedAllocated};
+  }
   function demo() {
     const defs = [
-      ["assistant", "Nemotron / NIM inference", "Language & Reasoning", "H200-SXM-141GB", 8, 24, 90, 15000],
-      ["search", "BioNeMo model inference", "AI for Science", "H100-PCIE-80GB", 4, 90, 45, 60000],
-      ["copilot", "Cosmos video generation", "World Models", "B200-SXM-180GB", 8, 30, 120, 18000],
-      ["vision", "DRIVE / Alpamayo cloud evaluation", "Autonomous Vehicles", "H100-SXM-80GB", 4, 50, 60, 20000],
-      ["recommend", "Omniverse render requests", "Simulation & Digital Twins", "RTX-PRO-6000-BW-SERVER-96GB", 4, 120, 30, 80000],
-      ["agents", "Isaac / GR00T policy evaluation", "Robotics", "B200-SXM-180GB", 8, 20, 150, 10000],
-      ["chip-design", "ChipNeMo design assistance", "Chip Design Research", "H200-SXM-141GB", 8, 40, 45, 10000],
+      ["assistant", DEMO_SERVICE_LABELS.assistant.name, "Language & Reasoning", "H200-SXM-141GB", 8, 24, 90, 15000],
+      ["search", DEMO_SERVICE_LABELS.search.name, "AI for Science", "H100-PCIE-80GB", 4, 90, 45, 60000],
+      ["copilot", DEMO_SERVICE_LABELS.copilot.name, "World Models", "B200-SXM-180GB", 8, 30, 120, 18000],
+      ["vision", DEMO_SERVICE_LABELS.vision.name, "Autonomous Vehicles", "H100-SXM-80GB", 4, 50, 60, 20000],
+      ["recommend", DEMO_SERVICE_LABELS.recommend.name, "Simulation & Digital Twins", "RTX-PRO-6000-BW-SERVER-96GB", 4, 120, 30, 80000],
+      ["agents", DEMO_SERVICE_LABELS.agents.name, "Robotics", "B200-SXM-180GB", 8, 20, 150, 10000],
+      ["chip-design", DEMO_SERVICE_LABELS["chip-design"].name, "Chip Design Research", "H200-SXM-141GB", 8, 40, 45, 10000],
     ];
     const services = defs.map(([id, name, team, p, gpus, rps, annualGrowth]) => ({
       id, name, team, pool: p, gpusPerReplica: gpus, rpsPerReplica: rps,
@@ -849,7 +1156,8 @@
   }
   const api = {POOLS, SKU_CATALOG, WORKLOAD_AREAS, NORMALIZATION_REFERENCE, skuInfo, activePools, validate, upgrade, defaultDrivers, defaultForecast, number, date, months, growth, trend, baseline,
     inference, profileFor, FORECAST_MODELS, predictPeak, forecastEvidence, trafficForecast, capacityForecast,
-    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, recordedAllocations, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo};
+    normalizationKey, normalizationFor, bottomUpForecast, serviceDemandHistory, recordedAllocations, segmentCapacity, moveTraining, training, portfolio, comparePeriods, demo,
+    COMPUTE_SPECS, PLANNER_MAX_MONTHS_AHEAD, GPU_PURCHASE_ASSUMPTIONS, computeEquivalent, plannerForecast, demoTrainingHistory, importTrainingHistory};
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.CapacityModel = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

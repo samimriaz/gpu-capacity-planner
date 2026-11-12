@@ -97,13 +97,14 @@ test("training memory budget cannot exceed the selected GPU SKU", () => {
   assert.doesNotThrow(() => M.validate(state));
 });
 
-test("NVIDIA demo uses public workload categories and exact individual-GPU inventory", () => {
+test("demo uses generic workload categories and exact individual-GPU inventory", () => {
   const state = M.demo();
   assert.equal(state.services.length, 7);
-  for (const word of ["Nemotron", "DRIVE", "GR00T", "Cosmos", "Omniverse", "BioNeMo", "ChipNeMo"]) {
+  for (const word of ["Language", "Scientific", "Video", "Autonomous", "Rendering", "Robotics", "Chip"]) {
     assert.ok(state.services.some(s => s.name.includes(word)));
-    assert.ok(M.WORKLOAD_AREAS.some(w => w.name.includes(word) && w.source.startsWith("https://")));
   }
+  assert.equal(M.WORKLOAD_AREAS.length, 7);
+  assert.ok(M.WORKLOAD_AREAS.every(w => w.description.length > 0));
   assert.ok(state.services.every(s => !M.skuInfo(s.pool).legacy));
   assert.equal(M.activePools(state).length, 5);
   assert.equal(M.POOLS.reduce((n, p) => n + state.supply[p].installed, 0), 200000);
@@ -112,7 +113,7 @@ test("NVIDIA demo uses public workload categories and exact individual-GPU inven
 
 test("non-text job examples declare zero text-token inputs and matching profile ranges", () => {
   const state = M.demo();
-  const render = state.services.find(s => s.name.includes("Omniverse"));
+  const render = state.services.find(s => s.id === "recommend");
   const profile = state.benchmarks.find(b => b.pool === render.pool);
   assert.equal(render.inputTokens, 0);
   assert.equal(render.outputTokens, 0);

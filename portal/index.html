@@ -3,24 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GPU Atlas | GPU Capacity Forecasting</title>
+  <title>CapacityIQ | GPU Planning &amp; Forecasting</title>
   <link rel="stylesheet" href="styles.css">
   <script defer src="model.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="#planning"><span class="brand-icon">A</span><span>GPU Atlas<small>INFRASTRUCTURE INTELLIGENCE</small></span></a>
+    <a class="brand" href="#planning"><span class="brand-icon" aria-hidden="true">C</span><span>CapacityIQ<small>GPU PLANNING &amp; FORECASTING</small></span></a>
     <div class="workspace-label">PLANNING WORKSPACE</div>
     <nav aria-label="Main navigation">
-      <button data-view="planning" class="active"><span>00</span> Scenario planner</button>
-      <button data-view="capacity"><span>01</span> Capacity forecast</button>
-      <button data-view="overview"><span>02</span> Consumption</button>
-      <button data-view="inference"><span>03</span> Service plans</button>
-      <button data-view="benchmarks"><span>04</span> Performance profiles</button>
-      <button data-view="training"><span>05</span> Training roadmap</button>
-      <button data-view="forecasts"><span>06</span> Daily backtests</button>
-      <button data-view="data"><span>07</span> Data & assumptions</button>
+      <button data-view="planning" class="active"><span>00</span> Capacity planner</button>
+      <button data-view="data"><span>01</span> Data & assumptions</button>
     </nav>
     <div class="sidebar-bottom"><span class="dot"></span> Local planning workspace<p>Synthetic fleet. Real calculations.<br>No infrastructure actions.</p><span id="save-state">Browser-local storage</span></div>
   </aside>
@@ -34,12 +28,12 @@
       <div><p class="eyebrow">FORECAST. ADJUST. PLAN.</p><h1 id="page-title">Capacity forecast</h1><p id="page-subtitle"></p></div>
       <button class="button primary" id="main-action">Export forecast</button>
     </section>
-    <form id="forecast-start-form" class="filterbar" aria-label="Start a forecast" hidden>
-      <label>Which month should the forecast start?<input type="month" id="forecast-start-month" required></label>
-      <button class="button primary" type="submit">Start forecast</button>
+    <form id="forecast-start-form" class="filterbar" aria-label="Select forecast month" hidden>
+      <label>Forecast for which month?<input type="month" id="forecast-start-month" required></label>
+      <button class="button primary" type="submit">Show forecast</button>
       <button class="button subtle" type="button" id="save-forecast">Save forecast</button>
       <span class="help forecast-save-status" id="forecast-save-status" role="status"></span>
-      <span class="filter-note">All services · Six-month forecast</span>
+      <span class="help" id="forecast-window"></span>
     </form>
     <div id="planning-introduction"></div>
     <section id="workspace-filters" class="filterbar" aria-label="Workspace filters">
@@ -50,7 +44,7 @@
       <span class="filter-note">Six-month planning horizon <span class="dot"></span></span>
     </section>
     <div id="content"></div>
-    <footer>GPU Atlas / Local prototype <span>Estimates are not reservations or placement guarantees.</span></footer>
+    <footer>CapacityIQ / Local prototype <span>Estimates are not reservations or placement guarantees.</span></footer>
   </main>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="editor-form">
