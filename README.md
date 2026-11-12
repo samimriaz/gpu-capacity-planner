@@ -71,8 +71,13 @@ three summary cards: **Current allocated GPUs**, **Forecast GPU need**, and
 allocations and forecast need include both segments unless training is excluded.
 Incomplete allocations show a labeled known subtotal; the summary gap remains
 unavailable until both allocations and forecast are complete. This net physical
-GPU comparison does not imply transfers or SKU substitutability; the detailed
-segment/SKU tables retain their separate budget-based gaps.
+GPU comparison does not imply transfers or SKU substitutability. The detailed
+segment/SKU tables use the same formula: forecasted GPUs minus current GPUs.
+Manual budget edits change neither the forecast nor the gap.
+Each titled forecast section has an arrow in its heading to collapse or expand
+its content independently. Sections start expanded, and their open/closed state
+is retained while editing growth or re-rendering the current page. Heading
+toggles also support keyboard interaction.
 The extra planning toolbar is removed: summaries and budget edits
 use the forecast start month, charts use physical GPUs, and the full six-month
 forecast remains visible. Training inclusion and global adjustments are still
@@ -150,26 +155,35 @@ add fleet telemetry ingestion or multi-model service support.
   Existing percentage splits remain saved company allocation baselines, not
   forecast budgets. Under service/organization filters, current allocated inference GPUs use
   only that scope's recorded allocations, not the entire company count.
-- Training has **no separate recorded allocation history** in the existing
-  workspace. Future scheduled runs are requirements, not proof of GPUs already
-  assigned. Current allocated training GPUs remain explicitly unavailable until a real company
-  training allocation baseline is saved. Company training baselines are not
-  attributed to individual teams; scoped current allocated training GPUs remain unavailable.
-  Missing inference allocation history also remains unavailable, not zero.
+- At company scope, **current allocated training GPUs = usable supply at
+  planning start - current allocated inference GPUs**, separately for each SKU.
+  This is an explicit planning assumption that all remaining usable capacity
+  belongs to training, not unassigned inventory or measured training history.
+  Saved training allocation counts (including zero) and legacy splits take
+  precedence; clearing a correction restores the remaining-capacity calculation.
+  Both current segments therefore sum to usable starting supply unless an
+  explicit baseline overrides the assumption.
+- Training allocations remain constant across the forecast. Additions ready
+  by planning start are included; future additions do not automatically change
+  current allocations. Training requirements still come from scheduled runs,
+  independently of allocated capacity. Past plans do not recur automatically.
+  Company training capacity is not duplicated into each team: scoped training
+  allocations remain unavailable without ownership attribution. If inference
+  allocation is unknown or exceeds supply, the remaining training count is
+  unavailable rather than an invented zero or negative allocation.
 - Explicit company allocation counts must fit usable supply at planning start.
   If recorded allocations exceed supply in a scenario, a conflict is shown
   rather than silently capping or reclaiming recorded allocations. Future
   additions increase company supply but are not assigned to a team automatically.
-- **Segment gap = Budget - Current allocated GPUs.** Positive means capacity to add to that
+- **Segment gap = Forecasted GPUs - Current allocated GPUs.** Positive means capacity to add to that
   segment; negative means capacity retained by that team, not capacity released
-  for other teams to borrow. Budgets are scoped to the filtered demand.
-  The combined shortage KPI sums positive per-SKU
-  `(inference budget + training budget - total usable supply)` values.
-  It includes unassigned supply and future additions, so it can differ from
-  segment gaps. Spare capacity on other SKUs never offsets a shortage.
+  for other teams to borrow. Manual budget edits do not change this gap.
+  The top-level gap sums the selected inference and training forecasts and
+  subtracts their current allocations. Review per-SKU gaps separately: spare
+  capacity on one SKU does not automatically cover another SKU's shortage.
 - JSON forecasts and requirements CSVs include current allocated GPUs (the existing
   `inferenceHave` and `trainingHave` fields), allocation source
-  (`recorded-allocation`, `entered-allocation`, or `missing`), supply conflict
+  (`recorded-allocation`, `entered-allocation`, `remaining-capacity`, or `missing`), supply conflict
   flags, budget, budget source
   (`forecast`, `manual`, or training `excluded`), segment gaps and completeness
   flags. `gap` remains the forecast need minus all usable supply; the separate

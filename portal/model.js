@@ -237,10 +237,11 @@
     const companyScope = selectedId === "all" && selectedTeam === "all";
     const explicitInference = companyScope ? supply.inferenceAvailable ?? legacyInference : null;
     const inference = explicitInference ?? recordedInference;
-    const training = companyScope ? supply.trainingAvailable ?? (legacyInference === null ? null : usable - legacyInference) : null;
+    const enteredTraining = companyScope ? supply.trainingAvailable ?? (legacyInference === null ? null : usable - legacyInference) : null;
+    const training = enteredTraining ?? (companyScope && inference !== null && inference <= usable ? usable - inference : null);
     return {usable, inference, training, recordedInference,
       inferenceSource: explicitInference !== null ? "entered-allocation" : recordedInference !== null ? "recorded-allocation" : "missing",
-      trainingSource: training === null ? "missing" : "entered-allocation"};
+      trainingSource: training === null ? "missing" : enteredTraining !== null ? "entered-allocation" : "remaining-capacity"};
   }
   function months(start, count = 6) {
     month(start);
@@ -499,8 +500,8 @@
           allocationConflict: (have.inference ?? 0) + (have.training ?? 0) > have.usable,
           inferenceBudgetSource: override?.inference !== undefined ? "manual" : "forecast",
           trainingBudgetSource: !options.includeTraining ? "excluded" : override?.training !== undefined ? "manual" : "forecast",
-          inferenceGap: inferenceBudget !== null && have.inference !== null ? inferenceBudget - have.inference : null,
-          trainingGap: trainingBudget !== null && have.training !== null ? trainingBudget - have.training : null,
+          inferenceGap: inferenceComplete && have.inference !== null ? inferenceGpus - have.inference : null,
+          trainingGap: trainingComplete && have.training !== null ? trainingGpus - have.training : null,
           budgetRequired, budgetGap: budgetRequired === null ? null : budgetRequired - usable};
       });
       return {month: m, pools, baselineRequired: pools.reduce((n, p) => n + p.baselineInference, 0),

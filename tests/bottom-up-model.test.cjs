@@ -60,9 +60,10 @@ test("budgets follow forecast need and inference Have uses existing allocation r
   assert.equal(pool.trainingBudgetSource, "forecast");
   assert.ok(pool.inferenceHave > 0);
   assert.equal(pool.inferenceHaveSource, "recorded-allocation");
-  assert.equal(pool.trainingHave, null);
-  assert.equal(pool.inferenceGap, pool.inferenceBudget - pool.inferenceHave);
-  assert.equal(pool.trainingGap, null);
+  assert.equal(pool.trainingHave, pool.usable - pool.inferenceHave);
+  assert.equal(pool.trainingHaveSource, "remaining-capacity");
+  assert.equal(pool.inferenceGap, pool.inference - pool.inferenceHave);
+  assert.equal(pool.trainingGap, pool.training - pool.trainingHave);
   assert.equal(pool.gap, pool.required - pool.usable);
 });
 
@@ -132,7 +133,7 @@ test("incomplete inference sizing leaves its gap unknown while training gap rema
   assert.equal(p.inferenceComplete, false);
   assert.equal(p.inferenceGap, null);
   assert.equal(p.trainingComplete, true);
-  assert.equal(p.trainingGap, p.trainingBudget - p.trainingHave);
+  assert.equal(p.trainingGap, p.training - p.trainingHave);
 });
 
 test("manual budget overrides are scoped by month, service, organization and GPU SKU", () => {
@@ -144,8 +145,8 @@ test("manual budget overrides are scoped by month, service, organization and GPU
   const p = report.monthly[1].pools.find(p => p.pool === service.pool);
   assert.equal(p.inferenceBudget, 15);
   assert.equal(p.trainingBudget, 25);
-  assert.equal(p.inferenceGap, 5);
-  assert.equal(p.trainingGap, 5);
+  assert.equal(p.inferenceGap, p.inference - 10);
+  assert.equal(p.trainingGap, p.training - 20);
   assert.equal(p.budgetRequired, 40);
   assert.equal(p.budgetGap, 40 - p.usable);
   assert.equal(p.inferenceBudgetSource, "manual");
@@ -189,7 +190,7 @@ test("available counts remain fixed despite future additions and do not have to 
     assert.equal(p.inferenceHave, 4);
     assert.equal(p.trainingHave, 6);
     assert.equal(p.usable, i < 2 ? 16 : 26);
-    assert.equal(p.inferenceGap, p.inferenceBudget - 4);
+    assert.equal(p.inferenceGap, p.inference - 4);
   }
 });
 
@@ -220,7 +221,7 @@ test("manual targets do not fabricate missing forecast need", () => {
   const manual = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === service.pool);
   assert.equal(manual.inferenceComplete, false);
   assert.equal(manual.inferenceBudget, 3);
-  assert.equal(manual.inferenceGap, 1);
+  assert.equal(manual.inferenceGap, null);
 });
 
 test("training exclusion preserves a zero manual target and restores it when re-enabled", () => {
@@ -294,7 +295,76 @@ test("observed allocation supply conflicts remain visible rather than capping or
   const p = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === sku);
   assert.equal(p.inferenceHave, recorded);
   assert.equal(p.allocationConflict, true);
-  assert.equal(p.inferenceGap, p.inferenceBudget - recorded);
+  assert.equal(p.inferenceGap, p.inference - recorded);
+});
+
+test("company training allocation is the remaining usable capacity by SKU", () => {
+  const state = M.demo(), report = M.bottomUpForecast(state);
+  for (const month of report.monthly) for (const p of month.pools) {
+    const baseline = M.segmentCapacity(state, p.pool);
+    assert.equal(p.trainingHaveSource, "remaining-capacity");
+    assert.equal(p.inferenceHave + p.trainingHave, baseline.usable);
+    assert.equal(p.trainingHave, baseline.usable - p.inferenceHave);
+    assert.equal(p.trainingGap, p.training - p.trainingHave);
+  }
+});
+
+test("forecast gaps are independent of budget overrides for both segments", () => {
+  const state = M.demo(), before = M.bottomUpForecast(state);
+  state.segmentBudgets = before.monthly.flatMap(m => m.pools.map(p =>
+    ({pool: p.pool, month: m.month, serviceId: "all", team: "all", inference: 0, training: 0})));
+  const after = M.bottomUpForecast(M.validate(state));
+  for (const [i, month] of after.monthly.entries()) for (const p of month.pools) {
+    const original = before.monthly[i].pools.find(b => b.pool === p.pool);
+    assert.equal(p.inferenceBudget, 0);
+    assert.equal(p.trainingBudget, 0);
+    assert.equal(p.inferenceGap, original.inferenceGap);
+    assert.equal(p.trainingGap, original.trainingGap);
+    assert.equal(p.inferenceGap, p.inference - p.inferenceHave);
+    assert.equal(p.trainingGap, p.training - p.trainingHave);
+  }
+});
+
+test("remaining training allocation uses planning-start supply, not future additions or forecast growth", () => {
+  const state = M.demo(), sku = state.services[0].pool;
+  state.supply[sku] = {installed: 20, unavailable: 2, reserve: 3, inferenceAvailable: 4};
+  state.supply.additions = [
+    {pool: sku, month: state.startMonth, gpus: 2},
+    {pool: sku, month: M.months(state.startMonth)[2], gpus: 10},
+  ];
+  const before = M.segmentCapacity(state, sku);
+  assert.equal(before.training, 13);
+  state.services[0].scenarioGrowthPct = 100;
+  state.training[0].scenarioGrowthPct = 100;
+  const report = M.bottomUpForecast(M.validate(state));
+  for (const [i, m] of report.monthly.entries()) {
+    const p = m.pools.find(p => p.pool === sku);
+    assert.equal(p.trainingHave, 13);
+    assert.equal(p.usable, i < 2 ? 17 : 27);
+  }
+});
+
+test("saved training allocations override the remaining-capacity assumption and zero is preserved", () => {
+  const state = M.demo(), sku = state.services[0].pool;
+  state.supply[sku].trainingAvailable = 0;
+  let capacity = M.segmentCapacity(state, sku);
+  assert.equal(capacity.training, 0);
+  assert.equal(capacity.trainingSource, "entered-allocation");
+  delete state.supply[sku].trainingAvailable;
+  capacity = M.segmentCapacity(state, sku);
+  assert.equal(capacity.training, capacity.usable - capacity.inference);
+  assert.equal(capacity.trainingSource, "remaining-capacity");
+});
+
+test("company remaining training capacity is not duplicated into each team's allocation", () => {
+  const state = M.demo(), service = state.services[0];
+  assert.ok(M.segmentCapacity(state, service.pool).training > 0);
+  assert.equal(M.segmentCapacity(state, service.pool, service.id).training, null);
+  assert.equal(M.segmentCapacity(state, service.pool, "all", service.team).training, null);
+  state.supply[service.pool] = {installed: 1, unavailable: 0, reserve: 0};
+  const p = M.bottomUpForecast(state).monthly[0].pools.find(p => p.pool === service.pool);
+  assert.equal(p.trainingHave, null);
+  assert.equal(p.allocationConflict, true);
 });
 
 test("service rows expose names, current observed demand and all monthly GPU estimates", () => {
